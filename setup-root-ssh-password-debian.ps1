@@ -33,7 +33,7 @@ function Generate-SSHKey {
         $keygenArgs = @(
             "-t", "rsa",
             "-b", "4096", 
-            "-C", "admin@vps-setup",
+            "-C", "ez@ezlabsnodes",
             "-f", $privateKeyPath,
             "-N", '""',
             "-q"
@@ -104,7 +104,7 @@ $privateKeyBase64
 "@
         
         # Create public key in OpenSSH format
-        $publicKeyContent = "ssh-rsa $publicKeyBase64 admin@vps-setup"
+        $publicKeyContent = "ssh-rsa $publicKeyBase64 ez@ezlabsnodes"
         
         # Save keys
         $privateKeyContent | Out-File -FilePath $PrivateKeyPath -Encoding ASCII -NoNewline
