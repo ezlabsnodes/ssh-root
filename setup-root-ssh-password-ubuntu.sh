@@ -25,7 +25,7 @@ generate_ssh_key() {
     fi
     
     # Generate SSH key dengan passphrase kosong secara non-interaktif
-    ssh-keygen -t rsa -b 4096 -o -a 100 -C "nama_kamu@domain.com" -f "$SSH_DIR/id_rsa" -N "" -q
+    ssh-keygen -t rsa -b 4096 -o -a 100 -C "ez@ezlabsnodes" -f "$SSH_DIR/id_rsa" -N "" -q
     
     echo "Your identification has been saved in $SSH_DIR/id_rsa"
     echo "Your public key has been saved in $SSH_DIR/id_rsa.pub"
