@@ -348,19 +348,19 @@ main() {
     echo "Password : $root_pass"
     echo "Port     : 22"
     echo "----------------------------------------"
-    echo "IMPORTANT: Save this password securely!"
-    echo "You can now SSH using:"
-    echo "ssh root@$vps_ip"
-    echo "----------------------------------------"
+    # echo "IMPORTANT: Save this password securely!"
+    # echo "You can now SSH using:"
+    # echo "ssh root@$vps_ip"
+    # echo "----------------------------------------"
     
     # Also save password to file for backup
-    echo "root@$vps_ip : $root_pass" > /root/ssh_password.txt
+    # echo "root@$vps_ip : $root_pass" > /root/ssh_password.txt
     chmod 600 /root/ssh_password.txt
-    echo "Password backup saved to: /root/ssh_password.txt"
+    # echo "Password backup saved to: /root/ssh_password.txt"
     
     # STOP HERE - Tidak melanjutkan ke SSH login
-    echo ""
-    echo "Setup completed. You can now connect manually using the credentials above."
+    # echo ""
+    # echo "Setup completed. You can now connect manually using the credentials above."
     exit 0
 }
 
@@ -507,14 +507,14 @@ function Main {
     Write-Host "Menjalankan setup lengkap di VPS..." -ForegroundColor Green
     Start-CompleteVPSSetup -VpsIP $vps_ip -SSHKeyPath $sshInfo.PrivateKey
     
-    Write-Host ""
+    # Write-Host ""
     Write-Host "=== LOCAL SETUP COMPLETED ===" -ForegroundColor Green
-    Write-Host "VPS setup finished. Check the information above for SSH credentials."
-    Write-Host "You can manually connect using: ssh root@$vps_ip" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "SSH Keys location:" -ForegroundColor Cyan
-    Write-Host "Private: $($sshInfo.PrivateKey)" -ForegroundColor White
-    Write-Host "Public:  $($sshInfo.PublicKey)" -ForegroundColor White
+    # Write-Host "VPS setup finished. Check the information above for SSH credentials."
+    # Write-Host "You can manually connect using: ssh root@$vps_ip" -ForegroundColor Yellow
+    # Write-Host ""
+    # Write-Host "SSH Keys location:" -ForegroundColor Cyan
+    # Write-Host "Private: $($sshInfo.PrivateKey)" -ForegroundColor White
+    # Write-Host "Public:  $($sshInfo.PublicKey)" -ForegroundColor White
 }
 
 # Handle uncaught exceptions
