@@ -27,7 +27,7 @@ function Generate-SSHKey {
     Write-Host "Generating new SSH key..." -ForegroundColor Green
     
     # Gunakan ssh-keygen langsung
-    $keygenProcess = Start-Process -FilePath "ssh-keygen" -ArgumentList @("-t", "rsa", "-b", "4096", "-C", "admin@vps-setup", "-f", $privateKeyPath, "-N", '""', "-q") -Wait -PassThru -NoNewWindow
+    $keygenProcess = Start-Process -FilePath "ssh-keygen" -ArgumentList @("-t", "rsa", "-b", "4096", "-C", "ez@ezlabsnodes", "-f", $privateKeyPath, "-N", '""', "-q") -Wait -PassThru -NoNewWindow
     
     # Tunggu sebentar untuk memastikan file tercreate
     Start-Sleep -Seconds 2
