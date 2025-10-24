@@ -370,18 +370,18 @@ main() {
     echo "SSH User: root"
     echo "Root Password: $ROOT_PASS"
     echo "SSH Port: 22"
-    echo ""
-    echo "You can now connect using:"
-    echo "ssh root@$PUBLIC_IP"
-    echo ""
-    echo "=== IMPORTANT ==="
-    echo "Save the root password shown above!"
+    # echo ""
+    # echo "You can now connect using:"
+    # echo "ssh root@$PUBLIC_IP"
+    # echo ""
+    # echo "=== IMPORTANT ==="
+    # echo "Save the root password shown above!"
     echo "================================"
     
     # Save password to file
-    echo "Root password: $ROOT_PASS" > /root/password.txt
-    chmod 600 /root/password.txt
-    echo "Password saved to /root/password.txt"
+    # echo "Root password: $ROOT_PASS" > /root/password.txt
+    # chmod 600 /root/password.txt
+    # echo "Password saved to /root/password.txt"
 }
 
 # Run main function and handle errors
@@ -566,14 +566,14 @@ function Main {
     Write-Host "Starting complete VPS setup..." -ForegroundColor Cyan
     Start-CompleteVPSSetup -VpsIP $vps_ip -SSHKeyPath $sshInfo.PrivateKey
     
-    Write-Host ""
-    Write-Host "=== SETUP PROCESS COMPLETED ===" -ForegroundColor Green
-    Write-Host "Check the output above for root password and connection details." -ForegroundColor White
-    Write-Host "Connect using: ssh root@$vps_ip" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "SSH Keys location:" -ForegroundColor Cyan
-    Write-Host "Private: $($sshInfo.PrivateKey)" -ForegroundColor White
-    Write-Host "Public:  $($sshInfo.PublicKey)" -ForegroundColor White
+    # Write-Host ""
+    # Write-Host "=== SETUP PROCESS COMPLETED ===" -ForegroundColor Green
+    # Write-Host "Check the output above for root password and connection details." -ForegroundColor White
+    # Write-Host "Connect using: ssh root@$vps_ip" -ForegroundColor Yellow
+    # Write-Host ""
+    # Write-Host "SSH Keys location:" -ForegroundColor Cyan
+    # Write-Host "Private: $($sshInfo.PrivateKey)" -ForegroundColor White
+    # Write-Host "Public:  $($sshInfo.PublicKey)" -ForegroundColor White
 }
 
 # Handle uncaught exceptions
