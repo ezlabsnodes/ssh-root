@@ -17,18 +17,32 @@ generate_ssh_key() {
     # Create .ssh directory if it doesn't exist
     mkdir -p "$SSH_DIR"
     
-    # Hapus file key yang sudah ada jika ada
+    # *** MODIFIED: Add interactive y/n prompt ***
+    local generate_new_key=true
     if [ -f "$SSH_DIR/id_rsa" ]; then
         echo "$SSH_DIR/id_rsa already exists."
-        echo "Overwrite (y/n)? y"
-        rm -f "$SSH_DIR/id_rsa" "$SSH_DIR/id_rsa.pub" 2>/dev/null
+        local overwrite_choice
+        # Read user input for overwrite
+        read -p "Overwrite (y/n)? " overwrite_choice
+        
+        if [[ "$overwrite_choice" =~ ^[Yy]$ ]]; then
+            echo "Overwriting existing key..."
+            rm -f "$SSH_DIR/id_rsa" "$SSH_DIR/id_rsa.pub" 2>/dev/null
+        else
+            echo "Using existing key."
+            generate_new_key=false
+        fi
     fi
     
-    # Generate SSH key dengan passphrase kosong secara non-interaktif
-    ssh-keygen -t rsa -b 4096 -o -a 100 -C "ez@ezlabsnodes" -f "$SSH_DIR/id_rsa" -N "" -q
+    if [ "$generate_new_key" = true ]; then
+        # Generate SSH key dengan passphrase kosong secara non-interaktif
+        ssh-keygen -t rsa -b 4096 -o -a 100 -C "ez@ezlabsnodes" -f "$SSH_DIR/id_rsa" -N "" -q
+        
+        echo "Your identification has been saved in $SSH_DIR/id_rsa"
+        echo "Your public key has been saved in $SSH_DIR/id_rsa.pub"
+    fi
+    # *** END MODIFICATION ***
     
-    echo "Your identification has been saved in $SSH_DIR/id_rsa"
-    echo "Your public key has been saved in $SSH_DIR/id_rsa.pub"
     echo ""
     
     # Tampilkan public key untuk dicopy
@@ -60,16 +74,26 @@ copy_ssh_key() {
     clean_known_hosts "$vps_ip"
     
     # Copy public key dengan options untuk handle host key change
-    ssh-copy-id -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "$ssh_key.pub" "ubuntu@$vps_ip" > /dev/null 2>&1
+    ssh-copy-id -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -i "$ssh_key.pub" "ubuntu@$vps_ip" > /dev/null 2>&1
     
+    # *** MODIFIED: Add return status for retry loop ***
     if [ $? -eq 0 ]; then
         echo "SSH key copied successfully to VPS."
+        return 0 # Success
     else
         echo "Trying alternative method to copy SSH key..."
         # Alternative method
-        cat "$ssh_key.pub" | ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "$ssh_key" "ubuntu@$vps_ip" "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" > /dev/null 2>&1
-        echo "SSH key setup completed."
+        cat "$ssh_key.pub" | ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -i "$ssh_key" "ubuntu@$vps_ip" "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" > /dev/null 2>&1
+        
+        if [ $? -eq 0 ]; then
+            echo "SSH key setup completed (alternative)."
+            return 0 # Success
+        else
+            echo "Error: Both ssh-copy-id and alternative method failed."
+            return 1 # Failure
+        fi
     fi
+    # *** END MODIFICATION ***
 }
 
 # Fungsi untuk menjalankan setup lengkap di VPS
@@ -78,10 +102,17 @@ run_complete_vps_setup() {
     local ssh_key="$SSH_DIR/id_rsa"
     
     # Copy SSH key terlebih dahulu
+    # *** MODIFIED: Check return status from copy_ssh_key ***
     copy_ssh_key "$vps_ip"
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to copy SSH key. Aborting setup for this attempt."
+        return 1 # Failure
+    fi
+    # *** END MODIFICATION ***
     
     # Create setup script file
-    local temp_file=$(mktemp)
+    local temp_file
+    temp_file=$(mktemp)
     
     cat > "$temp_file" << 'EOFSCRIPT'
 #!/bin/bash
@@ -315,21 +346,52 @@ EOFSCRIPT
     # Copy and execute setup script on VPS dengan options untuk handle host key
     scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -i "$ssh_key" "$temp_file" "ubuntu@$vps_ip:/tmp/vps_complete_setup.sh" 2>/dev/null
     
+    # *** MODIFIED: Check all return codes to return failure status ***
     if [ $? -eq 0 ]; then
-        ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -i "$ssh_key" "ubuntu@$vps_ip" "sudo chmod +x /tmp/vps_complete_setup.sh && sudo /tmp/vps_complete_setup.sh" 2>/dev/null
+        # *** MODIFIED: Capture remote output ***
+        local remote_output
+        remote_output=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -i "$ssh_key" "ubuntu@$vps_ip" "sudo chmod +x /tmp/vps_complete_setup.sh && sudo /tmp/vps_complete_setup.sh" 2>/dev/null)
+        local ssh_exit_code=$?
         
-        if [ $? -eq 0 ]; then
+        # Print the output for the user
+        echo "$remote_output"
+        
+        if [ $ssh_exit_code -eq 0 ]; then
             echo "VPS setup completed successfully!"
+            # Cleanup
+            rm -f "$temp_file"
+            
+            # Echo a special formatted line for main() to capture
+            # Ini akan diekstraksi oleh fungsi main()
+            local ip_remote=$(echo "$remote_output" | grep 'IPv4' | awk '{print $3}' | tail -n 1)
+            local pass_remote=$(echo "$remote_output" | grep 'Password' | awk '{print $3}' | tail -n 1)
+            
+            # Gunakan IP input sebagai fallback jika deteksi IP remote gagal
+            if [ -z "$ip_remote" ]; then
+                ip_remote="$vps_ip"
+            fi
+            
+            # Cetak baris data khusus untuk ditangkap oleh main()
+            echo "---SETUP_DATA---"
+            echo "IP: $ip_remote"
+            echo "User: root"
+            echo "Password: $pass_remote"
+            echo "----------------"
+            
+            return 0 # Success
         else
-            echo "Warning: SSH execution had issues but setup might have completed."
+            echo "Warning: SSH execution had issues. Setup might be incomplete."
+            rm -f "$temp_file"
+            return 1 # Failure
         fi
     else
         echo "Error: Could not copy setup script to VPS."
         echo "Please check the VPS IP and network connectivity."
+        # Cleanup
+        rm -f "$temp_file"
+        return 1 # Failure
     fi
-    
-    # Cleanup
-    rm -f "$temp_file"
+    # *** END MODIFICATION ***
 }
 
 # Main script
@@ -337,29 +399,90 @@ main() {
     echo "=== COMPLETE VPS SETUP AUTOMATION ==="
     echo ""
     
-    # Generate SSH key
+    # Generate SSH key (akan meminta overwrite jika perlu)
     generate_ssh_key
     
     echo "=== VPS Connection & Setup ==="
     
-    # Get VPS IP
+    # *** MODIFIED: Handle multiple IPs from argument or prompt ***
+    local vps_ips_to_process=()
     if [ $# -ge 1 ]; then
-        vps_ip="$1"
+        # Use all command-line arguments as IPs
+        echo "Akan memproses IP dari argumen: $@"
+        vps_ips_to_process=("$@")
     else
-        read -p "Masukkan IP VPS: " vps_ip
+        # Ask the user to input space-separated IPs
+        echo "Masukkan IP VPS (pisahkan dengan spasi, tekan ENTER untuk selesai):"
+        read -a vps_ips_to_process
+    fi
+
+    if [ ${#vps_ips_to_process[@]} -eq 0 ]; then
+        echo "Error: Tidak ada IP VPS yang dimasukkan."
+        exit 1
     fi
     
-    # Clean known_hosts sebelum mulai
-    clean_known_hosts "$vps_ip"
+    # Array to store success results
+    local setup_results=()
     
-    # AUTO RUN SETUP - tanpa prompt
-    echo "Menjalankan setup lengkap di VPS..."
-    run_complete_vps_setup "$vps_ip"
+    # Loop through each provided IP
+    for vps_ip in "${vps_ips_to_process[@]}"; do
+        echo ""
+        echo "====================================================="
+        echo "=== MEMULAI SETUP UNTUK VPS: $vps_ip ==="
+        echo "====================================================="
+        
+        # Clean known_hosts before starting
+        clean_known_hosts "$vps_ip"
+        
+        local setup_successful=false
+        local setup_output="" # Variable to capture output
+        
+        # Start retry loop for this specific IP
+        while [ "$setup_successful" = false ]; do
+            echo "Attempting to run complete setup on VPS ($vps_ip)..."
+            
+            # Capture stdout to 'setup_output'
+            setup_output=$(run_complete_vps_setup "$vps_ip")
+            local exit_code=$?
+            
+            # Check exit code from run_complete_vps_setup
+            if [ $exit_code -eq 0 ]; then
+                setup_successful=true
+                echo "Setup finished successfully for $vps_ip."
+                
+                # Parse the output for credentials using the special tags
+                local ip_final=$(echo "$setup_output" | grep 'IP:' | awk '{print $2}')
+                local user_final=$(echo "$setup_output" | grep 'User:' | awk '{print $2}')
+                local pass_final=$(echo "$setup_output" | grep 'Password:' | awk '{print $2}')
+                
+                # Add to results array
+                if [ -n "$ip_final" ] && [ -n "$user_final" ] && [ -n "$pass_final" ]; then
+                    setup_results+=("IP: $ip_final | User: $user_final | Password: $pass_final")
+                else
+                    # Fallback if parsing fails
+                    setup_results+=("IP: $vps_ip | User: root | Password: (Gagal parse, cek log di atas)")
+                fi
+            else
+                echo "Setup failed for $vps_ip. Retrying in 10 seconds... (Press Ctrl+C to cancel)"
+                sleep 10
+                # Clean hosts again in case of key issues
+                clean_known_hosts "$vps_ip"
+            fi
+        done
+    done
+    
+    # *** END MODIFICATION ***
     
     echo ""
-    # echo "=== LOCAL SETUP COMPLETED ==="
-    # echo "VPS setup finished. Check the information above for SSH credentials."
-    # echo "You can manually connect using: ssh root@$vps_ip"
+    echo "=== RINGKASAN HASIL SETUP ==="
+    if [ ${#setup_results[@]} -gt 0 ]; then
+        for result in "${setup_results[@]}"; do
+            echo "$result"
+        done
+    else
+        echo "Tidak ada setup VPS yang berhasil diselesaikan."
+    fi
+    echo "=============================="
 }
 
 # Jalankan main function
