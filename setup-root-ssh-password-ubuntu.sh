@@ -1,5 +1,5 @@
 #!/bin/bash
-# complete-vps-setup.sh - Complete VPS Setup Script for Bash
+# complete-vps-setup.sh - Complete VPS Setup Script for Bash (Ubuntu Version)
 
 # Fungsi untuk generate SSH key
 generate_ssh_key() {
@@ -63,7 +63,7 @@ clean_known_hosts() {
     fi
 }
 
-# Fungsi untuk copy public key ke VPS
+# Fungsi untuk copy public key ke VPS (User: ubuntu)
 copy_ssh_key() {
     local vps_ip="$1"
     local ssh_key="$SSH_DIR/id_rsa"
@@ -73,17 +73,19 @@ copy_ssh_key() {
     # Clean known_hosts first
     clean_known_hosts "$vps_ip"
     
-    # Copy public key dengan options untuk handle host key change
-    ssh-copy-id -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -i "$ssh_key.pub" "ubuntu@$vps_ip" > /dev/null 2>&1
+    # *** PERBAIKAN: Menghapus > /dev/null 2>&1 agar prompt password terlihat ***
+    # *** MODIFIED: User changed to 'ubuntu' ***
+    ssh-copy-id -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -i "$ssh_key.pub" "ubuntu@$vps_ip"
     
-    # *** MODIFIED: Add return status for retry loop ***
     if [ $? -eq 0 ]; then
         echo "SSH key copied successfully to VPS."
         return 0 # Success
     else
         echo "Trying alternative method to copy SSH key..."
         # Alternative method
-        cat "$ssh_key.pub" | ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -i "$ssh_key" "ubuntu@$vps_ip" "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" > /dev/null 2>&1
+        # *** MODIFIED: User changed to 'ubuntu' ***
+        # *** PERBAIKAN: Menghapus > /dev/null 2>&1 agar error terlihat ***
+        cat "$ssh_key.pub" | ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -i "$ssh_key" "ubuntu@$vps_ip" "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
         
         if [ $? -eq 0 ]; then
             echo "SSH key setup completed (alternative)."
@@ -93,7 +95,6 @@ copy_ssh_key() {
             return 1 # Failure
         fi
     fi
-    # *** END MODIFICATION ***
 }
 
 # Fungsi untuk menjalankan setup lengkap di VPS
@@ -102,19 +103,17 @@ run_complete_vps_setup() {
     local ssh_key="$SSH_DIR/id_rsa"
     
     # Copy SSH key terlebih dahulu
-    # *** MODIFIED: Check return status from copy_ssh_key ***
     copy_ssh_key "$vps_ip"
     if [ $? -ne 0 ]; then
         echo "Error: Failed to copy SSH key. Aborting setup for this attempt."
         return 1 # Failure
     fi
-    # *** END MODIFICATION ***
     
     # Create setup script file
     local temp_file
     temp_file=$(mktemp)
     
-    # *** MODIFIED: Added Fail2Ban function to remote script ***
+    # *** MODIFIED: EOFSCRIPT block updated for Ubuntu + Fail2Ban + IPv4 Fix ***
     cat > "$temp_file" << 'EOFSCRIPT'
 #!/bin/bash
 
@@ -158,21 +157,28 @@ set_root_password() {
     fi
 }
 
-# Function to add sudo user to sudo group
-add_user_to_sudo() {
-    echo -e "\n[3/8] Configuring sudo access..."
-    current_user=${SUDO_USER:-$(who am i | awk '{print $1}')}
+# Function to add ubuntu user to sudo group
+add_ubuntu_to_sudo() {
+    echo -e "\n[3/8] Configuring sudo access for ubuntu user..."
     
-    if [ -n "$current_user" ] && [ "$current_user" != "root" ]; then
-        # Check if user exists
-        if id "$current_user" &>/dev/null; then
-            usermod -aG sudo "$current_user"
-            echo "User '$current_user' added to sudo group."
-        else
-            echo "Warning: User '$current_user' does not exist."
+    # Check if ubuntu user exists
+    if id "ubuntu" &>/dev/null; then
+        # Add ubuntu user to sudo group
+        usermod -aG sudo ubuntu
+        echo "User 'ubuntu' added to sudo group."
+        
+        # Also ensure ubuntu user has proper shell
+        if ! grep -q "^ubuntu:" /etc/passwd | grep -q "bash"; then
+            usermod -s /bin/bash ubuntu
+            echo "Shell set to /bin/bash for ubuntu user."
         fi
     else
-        echo "Skipped: Could not find a non-root user."
+        echo "Warning: User 'ubuntu' does not exist. Creating ubuntu user..."
+        # Create ubuntu user with sudo privileges
+        useradd -m -s /bin/bash ubuntu
+        echo "ubuntu:$(generate_password 16)" | chpasswd
+        usermod -aG sudo ubuntu
+        echo "User 'ubuntu' created and added to sudo group."
     fi
 }
 
@@ -196,15 +202,15 @@ install_openssh() {
     echo -e "\n[5/8] Installing OpenSSH server..."
     
     # Check if SSH is already installed
-    if command -v ssh >/dev/null 2>&1; then
-        echo "OpenSSH is already installed."
+    if command -v ssh >/dev/null 2>&1 && systemctl is-active --quiet ssh; then
+        echo "OpenSSH is already installed and running."
     else
         apt install -y openssh-server > /dev/null 2>&1
         echo "OpenSSH server installed successfully."
     fi
 }
 
-# Function to configure SSH daemon
+# Function to configure SSH daemon for Ubuntu
 configure_ssh() {
     echo -e "\n[6/8] Configuring SSH for root login with password..."
     
@@ -213,13 +219,14 @@ configure_ssh() {
     # Backup original configuration
     cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup
     
-    # Create new SSH configuration
+    # Create new SSH configuration for Ubuntu
     cat > /etc/ssh/sshd_config << EOL
-# Generated by automated setup script
+# Generated by automated setup script for Ubuntu
 Port $SSH_PORT
 Protocol 2
 PermitRootLogin yes
 PasswordAuthentication yes
+PubkeyAuthentication yes
 ChallengeResponseAuthentication no
 UsePAM yes
 X11Forwarding yes
@@ -231,7 +238,7 @@ ClientAliveCountMax 2
 MaxAuthTries 3
 EOL
 
-    echo "SSH configuration updated."
+    echo "SSH configuration updated for Ubuntu."
 }
 
 # *** NEW FUNCTION: Install Fail2Ban ***
@@ -260,42 +267,48 @@ restart_ssh_service() {
     echo -e "\n[8/8] Restarting SSH service..."
     
     # Enable SSH service to start on boot
-    systemctl enable ssh > /dev/null 2>&1
+    systemctl enable ssh > /dev/null 2>&1 || systemctl enable sshd > /dev/null 2>&1
     
     # Restart SSH service
-    if systemctl restart ssh; then
+    if systemctl restart ssh 2>/dev/null; then
+        echo "SSH service restarted successfully."
+    elif systemctl restart sshd 2>/dev/null; then
         echo "SSH service restarted successfully."
     else
         echo "Warning: Failed to restart SSH service. Trying alternative method..."
-        service ssh restart > /dev/null 2>&1 || /etc/init.d/ssh restart > /dev/null 2>&1
+        service ssh restart > /dev/null 2>&1 || service sshd restart > /dev/null 2>&1 || /etc/init.d/ssh restart > /dev/null 2>&1
     fi
 }
 
-# Function to get VPS IP
+# *** MODIFIED FUNCTION: Force IPv4 ***
 get_vps_ip() {
-    echo -e "\nGetting VPS information..."
+    echo -e "\nGetting VPS information (IPv4)..."
     
-    # Try multiple methods to get public IP
+    # Try multiple methods to get public IP (Forcing IPv4)
     if command -v curl >/dev/null 2>&1; then
-        vps_ip=$(curl -s -m 5 ifconfig.me) || 
-        vps_ip=$(curl -s -m 5 ipinfo.io/ip) || 
-        vps_ip=$(curl -s -m 5 icanhazip.com)
+        vps_ip=$(curl -4 -s -m 5 ifconfig.me) || 
+        vps_ip=$(curl -4 -s -m 5 ipinfo.io/ip) || 
+        vps_ip=$(curl -4 -s -m 5 icanhazip.com)
     elif command -v wget >/dev/null 2>&1; then
-        vps_ip=$(wget -qO- -T 5 ifconfig.me) || 
-        vps_ip=$(wget -qO- -T 5 ipinfo.io/ip) || 
-        vps_ip=$(wget -qO- -T 5 icanhazip.com)
+        vps_ip=$(wget --inet4-only -qO- -T 5 ifconfig.me) || 
+        vps_ip=$(wget --inet4-only -qO- -T 5 ipinfo.io/ip) || 
+        vps_ip=$(wget --inet4-only -qO- -T 5 icanhazip.com)
     fi
     
-    # If all methods fail, use local IP
+    # If all methods fail, use local IP (Forcing IPv4)
     if [ -z "$vps_ip" ]; then
-        vps_ip=$(hostname -I | awk '{print $1}')
-        echo "Warning: Could not get public IP, using local IP instead."
+        vps_ip=$(ip -4 addr show scope global | grep inet | awk '{print $2}' | cut -d'/' -f1 | head -n1)
+        if [ -z "$vps_ip" ]; then
+            # Ultimate fallback
+            vps_ip=$(hostname -I | awk '{print $1}')
+        fi
+        echo "Warning: Could not get public IP via external services, using local IP: $vps_ip"
     fi
 }
 
-# Function to install dependencies
+# Function to install dependencies for Ubuntu
 install_dependencies() {
-    echo -e "Installing required dependencies..."
+    echo -e "Installing required dependencies for Ubuntu..."
     
     # Update package list first
     apt update -y > /dev/null 2>&1
@@ -309,26 +322,35 @@ install_dependencies() {
     apt install -y openssl > /dev/null 2>&1
 }
 
+# Function to check and install sudo if needed
+install_sudo_if_needed() {
+    if ! command -v sudo >/dev/null 2>&1; then
+        echo "Installing sudo..."
+        apt install -y sudo > /dev/null 2>&1
+    fi
+}
+
 # Main execution function
 main() {
-    echo "=== Automated System Setup for Debian/Ubuntu ==="
+    echo "=== Automated System Setup for Ubuntu ==="
     echo "This script will:"
     echo "1. Update system packages"
     echo "2. Set auto-generated root password"
-    echo "3. Configure sudo access"
+    echo "3. Configure sudo access for ubuntu user"
     echo "4. Update hosts file"
     echo "5. Install/configure OpenSSH"
-    echo "6. Enable root SSH login"
+    echo "6. Enable root SSH login with password"
     echo "7. Install Fail2Ban (Bruteforce Protection)"
-    echo "================================================"
+    echo "=========================================="
     
     # Install dependencies
     install_dependencies
+    install_sudo_if_needed
     
     # Execute all functions
     update_system
     set_root_password
-    add_user_to_sudo
+    add_ubuntu_to_sudo
     configure_hosts
     install_openssh
     configure_ssh
@@ -345,10 +367,10 @@ main() {
     echo "Password : $root_pass"
     echo "Port     : 22"
     echo "----------------------------------------"
-    #echo "IMPORTANT: Save this password securely!"
-    #echo "You can now SSH using:"
-    #echo "ssh root@$vps_ip"
-    #echo "----------------------------------------"
+    # echo "IMPORTANT: Save this password securely!"
+    # echo "You can now SSH using:"
+    # echo "ssh root@$vps_ip"
+    # echo "----------------------------------------"
     
     # Also save password to file for backup
     # echo "root@$vps_ip : $root_pass" > /root/ssh_password.txt
@@ -364,18 +386,21 @@ main() {
 # Run main function
 main
 EOFSCRIPT
-    # *** END OF REMOTE SCRIPT ***
+    # *** END OF EOFSCRIPT BLOCK ***
 
-    echo "Executing complete VPS setup on remote server..."
+    echo "Executing complete VPS setup on remote Ubuntu server..."
     
-    # Copy and execute setup script on VPS dengan options untuk handle host key
-    scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -i "$ssh_key" "$temp_file" "ubuntu@$vps_ip:/tmp/vps_complete_setup.sh" 2>/dev/null
+    # Copy and execute setup script on VPS (User: ubuntu)
+    # *** MODIFIED: User changed to 'ubuntu' ***
+    # *** PERBAIKAN: Menghapus 2>/dev/null agar error terlihat ***
+    scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -i "$ssh_key" "$temp_file" "ubuntu@$vps_ip:/tmp/vps_complete_setup.sh"
     
-    # *** MODIFIED: Check all return codes to return failure status ***
     if [ $? -eq 0 ]; then
-        # *** MODIFIED: Capture remote output ***
+        # *** MODIFIED: Capture remote output for summary ***
         local remote_output
-        remote_output=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -i "$ssh_key" "ubuntu@$vps_ip" "sudo chmod +x /tmp/vps_complete_setup.sh && sudo /tmp/vps_complete_setup.sh && sudo rm /tmp/vps_complete_setup.sh" 2>/dev/null)
+        # *** MODIFIED: User changed to 'ubuntu' and added script removal ***
+        # *** PERBAIKAN: Menghapus 2>/dev/null agar error terlihat ***
+        remote_output=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -i "$ssh_key" "ubuntu@$vps_ip" "sudo chmod +x /tmp/vps_complete_setup.sh && sudo /tmp/vps_complete_setup.sh && sudo rm /tmp/vps_complete_setup.sh")
         local ssh_exit_code=$?
         
         # Print the output for the user
@@ -387,7 +412,6 @@ EOFSCRIPT
             rm -f "$temp_file"
             
             # Echo a special formatted line for main() to capture
-            # Ini akan diekstraksi oleh fungsi main()
             local ip_remote=$(echo "$remote_output" | grep 'IPv4' | awk '{print $3}' | tail -n 1)
             local pass_remote=$(echo "$remote_output" | grep 'Password' | awk '{print $3}' | tail -n 1)
             
@@ -416,12 +440,11 @@ EOFSCRIPT
         rm -f "$temp_file"
         return 1 # Failure
     fi
-    # *** END MODIFICATION ***
 }
 
 # Main script
 main() {
-    echo "=== COMPLETE VPS SETUP AUTOMATION ==="
+    echo "=== COMPLETE VPS SETUP AUTOMATION FOR UBUNTU ==="
     echo ""
     
     # Generate SSH key (akan meminta overwrite jika perlu)
