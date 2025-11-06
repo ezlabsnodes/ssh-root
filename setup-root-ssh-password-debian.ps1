@@ -1,5 +1,5 @@
 # complete-vps-setup.ps1 - Complete VPS Setup Script for PowerShell
-# Fixed version - Multi-IP, CRLF clean, Credential Summary, Fail2Ban Protection
+# Fixed version - Multi-IP, CRLF clean, Credential Summary, Fail2Ban Protection, IPv4 Fix
 
 # Fungsi untuk generate SSH key
 function Generate-SSHKey {
@@ -385,19 +385,24 @@ restart_services() {
     fi
 }
 
-# Function to get system info
+# *** MODIFIED FUNCTION: Force IPv4 ***
 get_system_info() {
-    echo "[8/8] Gathering system information..."
+    echo "[8/8] Gathering system information (IPv4)..."
     if ! command -v curl >/dev/null 2>&1; then
         echo "Installing curl..."
         apt-get install -y curl > /dev/null 2>&1
     fi
-    # Try multiple IP services with timeouts
-    PUBLIC_IP=$(curl -s -m 5 ifconfig.me || curl -s -m 5 ipinfo.io/ip || curl -s -m 5 icanhazip.com)
+    # Try multiple IP services with timeouts (Forcing IPv4)
+    PUBLIC_IP=$(curl -4 -s -m 5 ifconfig.me || curl -4 -s -m 5 ipinfo.io/ip || curl -4 -s -m 5 icanhazip.com)
     
     if [ -z "$PUBLIC_IP" ]; then
-        PUBLIC_IP=$(hostname -I | awk '{print $1}')
-        echo "Could not fetch public IP, using local IP: $PUBLIC_IP"
+        # Better fallback for IPv4
+        PUBLIC_IP=$(ip -4 addr show scope global | grep inet | awk '{print $2}' | cut -d'/' -f1 | head -n1)
+        if [ -z "$PUBLIC_IP" ]; then
+            # Ultimate fallback
+            PUBLIC_IP=$(hostname -I | awk '{print $1}')
+        fi
+        echo "Could not fetch public IP via external services, using local IP: $PUBLIC_IP"
     fi
 }
 
@@ -493,7 +498,8 @@ function Start-CompleteVPSSetup {
         "debian@${VpsIP}:/tmp/vps_setup.sh"
     )
     
-    $scpResult = & scp @scpArgs 2>&1
+    # *** PERBAIKAN: Menghapus 2>&1 agar prompt password/error terlihat ***
+    $scpResult = & scp @scpArgs
     
     # *** MODIFIED: Capture remote output by reading log file ***
     if ($LASTEXITCODE -eq 0) {
