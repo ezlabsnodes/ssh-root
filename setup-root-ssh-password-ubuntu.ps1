@@ -1,5 +1,5 @@
 # complete-vps-setup.ps1 - Complete VPS Setup Script for PowerShell
-# Multi-IP, Fail2Ban Protection, Cleaned
+# Multi-IP, Fail2Ban Protection, Cleaned, IPv4 Fix
 
 # Fungsi untuk generate SSH key
 function Generate-SSHKey {
@@ -115,11 +115,14 @@ function Copy-SSHKey {
     # Method 1: Using ssh-copy-id (set timeout)
     try {
         # *** MODIFIED: Added ConnectTimeout ***
+        # *** PERBAIKAN: Menampilkan output jika terjadi error, agar prompt password terlihat ***
         $process = Start-Process -FilePath "ssh-copy-id" -ArgumentList @("-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=10", "-i", $publicKeyPath, "ubuntu@$VpsIP") -Wait -PassThru -NoNewWindow
         
         if ($process.ExitCode -eq 0) {
             Write-Host "SSH key copied successfully to VPS." -ForegroundColor Green
             return $true
+        } else {
+             Write-Host "ssh-copy-id failed with exit code $($process.ExitCode)." -ForegroundColor Yellow
         }
     } catch {
         Write-Host "ssh-copy-id failed: $($_.Exception.Message)" -ForegroundColor Yellow
@@ -138,6 +141,7 @@ function Copy-SSHKey {
         $command = "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && echo 'Key added successfully'"
         
         # *** MODIFIED: Added ConnectTimeout ***
+        # *** PERBAIKAN: Menampilkan output jika terjadi error ***
         $process2 = Start-Process -FilePath "ssh" -ArgumentList @("-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=10", "-i", $SSHKeyPath, "ubuntu@$VpsIP", $command) -Wait -PassThru -NoNewWindow -RedirectStandardInput $tempFile
         
         Remove-Item $tempFile -Force
@@ -145,6 +149,8 @@ function Copy-SSHKey {
         if ($process2.ExitCode -eq 0) {
             Write-Host "SSH key setup completed (alternative)." -ForegroundColor Green
             return $true
+        } else {
+            Write-Host "Alternative method failed with exit code $($process2.ExitCode)." -ForegroundColor Yellow
         }
     } catch {
         Write-Host "Alternative method failed: $($_.Exception.Message)" -ForegroundColor Red
@@ -157,7 +163,7 @@ function Copy-SSHKey {
 # Fungsi untuk membuat setup script yang akan dijalankan di VPS
 function New-VPSSetupScript {
     # Skrip bash internal (telah dibersihkan dari spasi tidak valid)
-    # *** MODIFIED: Added Fail2Ban function ***
+    # *** MODIFIED: Added Fail2Ban function + IPv4 Fix ***
     $setupScript = @'
 #!/bin/bash
 
@@ -201,7 +207,7 @@ set_root_password() {
     fi
 }
 
-# Function to add sudo user to sudo group
+# Function to add sudo user to sudo group (Ubuntu specific)
 add_user_to_sudo() {
     echo -e "\n[3/8] Configuring sudo access..."
     current_user=${SUDO_USER:-$(who am i | awk '{print $1}')}
@@ -283,7 +289,7 @@ install_bruteforce_protection() {
     apt install -y fail2ban > /dev/null 2>&1
     
     # Create a basic local jail config for SSHD
-    cat > /etc/fail2ban/jail.local << 'EOF'
+    cat > /etc/fail2ban/jail.local << 'EOF_F2B'
 [sshd]
 enabled = true
 port    = ssh
@@ -291,7 +297,7 @@ logpath = %(sshd_log)s
 backend = %(sshd_backend)s
 maxretry = 5
 bantime  = 1h
-EOF
+EOF_F2B
     
     systemctl enable fail2ban > /dev/null 2>&1
     systemctl restart fail2ban
@@ -314,25 +320,29 @@ restart_ssh_service() {
     fi
 }
 
-# Function to get VPS IP
+# *** MODIFIED FUNCTION: Force IPv4 ***
 get_vps_ip() {
-    echo -e "\nGetting VPS information..."
+    echo -e "\nGetting VPS information (IPv4)..."
     
-    # Try multiple methods to get public IP
+    # Try multiple methods to get public IP (Forcing IPv4)
     if command -v curl >/dev/null 2>&1; then
-        vps_ip=$(curl -s -m 5 ifconfig.me) || 
-        vps_ip=$(curl -s -m 5 ipinfo.io/ip) || 
-        vps_ip=$(curl -s -m 5 icanhazip.com)
+        vps_ip=$(curl -4 -s -m 5 ifconfig.me) || 
+        vps_ip=$(curl -4 -s -m 5 ipinfo.io/ip) || 
+        vps_ip=$(curl -4 -s -m 5 icanhazip.com)
     elif command -v wget >/dev/null 2>&1; then
-        vps_ip=$(wget -qO- -T 5 ifconfig.me) || 
-        vps_ip=$(wget -qO- -T 5 ipinfo.io/ip) || 
-        vps_ip=$(wget -qO- -T 5 icanhazip.com)
+        vps_ip=$(wget --inet4-only -qO- -T 5 ifconfig.me) || 
+        vps_ip=$(wget --inet4-only -qO- -T 5 ipinfo.io/ip) || 
+        vps_ip=$(wget --inet4-only -qO- -T 5 icanhazip.com)
     fi
     
-    # If all methods fail, use local IP
+    # If all methods fail, use local IP (Forcing IPv4)
     if [ -z "$vps_ip" ]; then
-        vps_ip=$(hostname -I | awk '{print $1}')
-        echo "Warning: Could not get public IP, using local IP instead."
+        vps_ip=$(ip -4 addr show scope global | grep inet | awk '{print $2}' | cut -d'/' -f1 | head -n1)
+        if [ -z "$vps_ip" ]; then
+            # Ultimate fallback
+            vps_ip=$(hostname -I | awk '{print $1}')
+        fi
+        echo "Warning: Could not get public IP via external services, using local IP: $vps_ip"
     fi
 }
 
@@ -456,6 +466,7 @@ function Start-CompleteVPSSetup {
         "ubuntu@${VpsIP}:/tmp/vps_complete_setup.sh"
     )
     
+    # *** PERBAIKAN: Menampilkan output jika terjadi error ***
     $scpResult = & scp @scpArgs 2>&1
     
     # *** MODIFIED: Capture remote output and return object ***
@@ -477,6 +488,7 @@ function Start-CompleteVPSSetup {
         Write-Host "Running remote setup (this may take a few minutes)..." -ForegroundColor Cyan
         
         # Jalankan SSH process dan tangkap outputnya
+        # *** PERBAIKAN: Menampilkan output jika terjadi error ***
         $remoteOutput = & ssh @sshArgs 2>&1
         $sshExitCode = $LASTEXITCODE
         
