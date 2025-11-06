@@ -1,5 +1,5 @@
 # complete-vps-setup.ps1 - Complete VPS Setup Script for PowerShell
-# Fixed version - No CRLF issues, better error handling
+# Fixed version - Multi-IP, CRLF clean, Credential Summary, Fail2Ban Protection
 
 # Fungsi untuk generate SSH key
 function Generate-SSHKey {
@@ -13,47 +13,60 @@ function Generate-SSHKey {
         New-Item -ItemType Directory -Path $SSH_DIR -Force | Out-Null
     }
     
-    # Hapus file key yang sudah ada jika ada
+    # Path file key
     $privateKeyPath = Join-Path $SSH_DIR "id_rsa"
     $publicKeyPath = Join-Path $SSH_DIR "id_rsa.pub"
     
+    # *** MODIFIED: Add interactive y/n prompt ***
+    $generateNewKey = $true
     if (Test-Path $privateKeyPath) {
         Write-Host "$privateKeyPath already exists." -ForegroundColor Yellow
-        Write-Host "Overwriting existing keys..." -ForegroundColor Yellow
-        Remove-Item $privateKeyPath -Force -ErrorAction SilentlyContinue
-        Remove-Item $publicKeyPath -Force -ErrorAction SilentlyContinue
+        $overwriteChoice = Read-Host "Overwrite (y/n)?"
+        
+        if ($overwriteChoice -match '^[Yy]$') {
+            Write-Host "Overwriting existing keys..." -ForegroundColor Yellow
+            Remove-Item $privateKeyPath -Force -ErrorAction SilentlyContinue
+            Remove-Item $publicKeyPath -Force -ErrorAction SilentlyContinue
+        } else {
+            Write-Host "Using existing key."
+            $generateNewKey = $false
+        }
     }
     
-    # Generate SSH key dengan passphrase kosong
-    Write-Host "Generating new SSH key..." -ForegroundColor Green
-    
-    # Method 1: Using ssh-keygen dengan full path
-    $sshKeygenPath = Get-Command "ssh-keygen" -ErrorAction SilentlyContinue
-    if ($sshKeygenPath) {
-        $keygenArgs = @(
-            "-t", "rsa",
-            "-b", "4096", 
-            "-C", "ez@ezlabsnodes",
-            "-f", $privateKeyPath,
-            "-N", '""',
-            "-q"
-        )
+    if ($generateNewKey) {
+        # Generate SSH key dengan passphrase kosong
+        Write-Host "Generating new SSH key..." -ForegroundColor Green
         
-        $process = Start-Process -FilePath $sshKeygenPath.Source -ArgumentList $keygenArgs -Wait -PassThru -NoNewWindow
-        
-        if ($process.ExitCode -eq 0 -and (Test-Path $publicKeyPath)) {
-            Write-Host "SSH key generated successfully using ssh-keygen" -ForegroundColor Green
+        # Method 1: Using ssh-keygen dengan full path
+        $sshKeygenPath = Get-Command "ssh-keygen" -ErrorAction SilentlyContinue
+        if ($sshKeygenPath) {
+            $keygenArgs = @(
+                "-t", "rsa",
+                "-b", "4096", 
+                "-C", "ez@ezlabsnodes",
+                "-f", $privateKeyPath,
+                "-N", '""',
+                "-q"
+            )
+            
+            $process = Start-Process -FilePath $sshKeygenPath.Source -ArgumentList $keygenArgs -Wait -PassThru -NoNewWindow
+            
+            if ($process.ExitCode -eq 0 -and (Test-Path $publicKeyPath)) {
+                Write-Host "SSH key generated successfully using ssh-keygen" -ForegroundColor Green
+            } else {
+                Write-Host "ssh-keygen failed, trying alternative method..." -ForegroundColor Yellow
+                Generate-SSHKey-PowerShell -PrivateKeyPath $privateKeyPath -PublicKeyPath $publicKeyPath
+            }
         } else {
-            Write-Host "ssh-keygen failed, trying alternative method..." -ForegroundColor Yellow
+            Write-Host "ssh-keygen not found, using PowerShell method..." -ForegroundColor Yellow
             Generate-SSHKey-PowerShell -PrivateKeyPath $privateKeyPath -PublicKeyPath $publicKeyPath
         }
-    } else {
-        Write-Host "ssh-keygen not found, using PowerShell method..." -ForegroundColor Yellow
-        Generate-SSHKey-PowerShell -PrivateKeyPath $privateKeyPath -PublicKeyPath $publicKeyPath
+        
+        Write-Host "Your identification has been saved in $privateKeyPath" -ForegroundColor Green
+        Write-Host "Your public key has been saved in $publicKeyPath" -ForegroundColor Green
     }
+    # *** END MODIFICATION ***
     
-    Write-Host "Your identification has been saved in $privateKeyPath" -ForegroundColor Green
-    Write-Host "Your public key has been saved in $publicKeyPath" -ForegroundColor Green
     Write-Host ""
     
     # Tampilkan public key untuk dicopy
@@ -189,7 +202,7 @@ echo 'SSH key added successfully'
                 "-o", "ConnectTimeout=30",
                 "-i", $SSHKeyPath,
                 "debian@$VpsIP",
-                "chmod +x /tmp/copy_key.sh && bash /tmp/copy_key.sh"
+                "chmod +x /tmp/copy_key.sh && bash /tmp/copy_key.sh && rm /tmp/copy_key.sh"
             )
             
             $sshProcess = Start-Process -FilePath "ssh" -ArgumentList $sshArgs -Wait -PassThru -NoNewWindow
@@ -213,6 +226,7 @@ echo 'SSH key added successfully'
         $sshCopyArgs = @(
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ConnectTimeout=10",
             "-i", $publicKeyPath,
             "debian@$VpsIP"
         )
@@ -224,10 +238,10 @@ echo 'SSH key added successfully'
             return $true
         }
     } catch {
-        Write-Host "ssh-copy-id also failed." -ForegroundColor Yellow
+        Write-Host "ssh-copy-id also failed: $($_.Exception.Message)" -ForegroundColor Yellow
     }
     
-    Write-Host "Warning: SSH key copy methods failed, but continuing..." -ForegroundColor Red
+    Write-Host "Error: Both SSH key copy methods failed." -ForegroundColor Red
     return $false
 }
 
@@ -236,37 +250,45 @@ function New-VPSSetupScript {
     # Script dalam format UNIX (LF line endings only)
     $setupScript = @'
 #!/bin/bash
-
+# Using set -e to exit immediately if a command exits with a non-zero status.
 set -e
 
 echo "=== Starting Automated System Setup for Debian ==="
 
 # Function to generate random password
 generate_password() {
+    # Added /dev/urandom for better entropy, pipe to tr to filter chars, head for length
     tr -dc 'A-Za-z0-9!@#$%^&*()_+-=' < /dev/urandom | head -c 16
     echo
 }
 
 # Function to update system packages
 update_system() {
-    echo "[1/7] Updating system packages..."
-    apt-get update -y
-    apt-get upgrade -y
+    echo "[1/8] Updating system packages..."
+    # Redirect output to /dev/null for cleaner execution
+    apt-get update -y > /dev/null 2>&1
+    apt-get upgrade -y > /dev/null 2>&1
     echo "System updated successfully."
 }
 
 # Function to set root password
 set_root_password() {
-    echo "[2/7] Setting root password..."
+    echo "[2/8] Setting root password..."
+    # Store password in a variable. Use local to scope it if preferred, but not strictly needed here.
     ROOT_PASS=$(generate_password)
     echo "root:$ROOT_PASS" | chpasswd
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to set root password." >&2
+        exit 1
+    fi
     echo "Root password set successfully."
+    # Echo password here so it gets captured by the log
     echo "Generated password: $ROOT_PASS"
 }
 
 # Function to configure debian user
 setup_debian_user() {
-    echo "[3/7] Configuring debian user..."
+    echo "[3/8] Configuring debian user..."
     if id "debian" &>/dev/null; then
         usermod -aG sudo debian
         usermod -s /bin/bash debian
@@ -283,25 +305,33 @@ setup_debian_user() {
 
 # Function to configure hosts file
 configure_hosts() {
-    echo "[4/7] Configuring /etc/hosts..."
+    echo "[4/8] Configuring /etc/hosts..."
     local hostname=$(hostname)
-    cp /etc/hosts /etc/hosts.backup
-    sed -i "/$hostname$/d" /etc/hosts
-    echo "127.0.0.1 $hostname" >> /etc/hosts
+    # Check if backup already exists
+    if [ ! -f /etc/hosts.backup ]; then
+        cp /etc/hosts /etc/hosts.backup
+    fi
+    # Use grep -v to filter out the line, then append the new line
+    grep -v "127.0.0.1 $hostname" /etc/hosts > /tmp/hosts.tmp
+    echo "127.0.0.1 $hostname" >> /tmp/hosts.tmp
+    mv /tmp/hosts.tmp /etc/hosts
     echo "Hosts file configured."
 }
 
 # Function to install and configure SSH
 setup_ssh() {
-    echo "[5/7] Installing and configuring SSH..."
-    if ! command -v ssh >/dev/null 2>&1; then
-        apt-get install -y openssh-server
+    echo "[5/8] Installing and configuring SSH..."
+    if ! command -v sshd >/dev/null 2>&1; then
+        echo "Installing openssh-server..."
+        apt-get install -y openssh-server > /dev/null 2>&1
     fi
     
     # Backup original config
-    cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup
+    if [ ! -f /etc/ssh/sshd_config.backup ]; then
+        cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup
+    fi
     
-    # Create new config
+    # Create new config using a HEREDOC
     cat > /etc/ssh/sshd_config << 'EOF'
 Port 22
 Protocol 2
@@ -322,26 +352,52 @@ EOF
     echo "SSH configuration updated."
 }
 
+# *** NEW FUNCTION: Install Fail2Ban ***
+install_bruteforce_protection() {
+    echo "[6/8] Installing Fail2Ban (Bruteforce Protection)..."
+    apt-get install -y fail2ban > /dev/null 2>&1
+    
+    # Create a basic local jail config for SSHD
+    cat > /etc/fail2ban/jail.local << 'EOF'
+[sshd]
+enabled = true
+port    = ssh
+logpath = %(sshd_log)s
+backend = %(sshd_backend)s
+maxretry = 5
+bantime  = 1h
+EOF
+    
+    systemctl enable fail2ban > /dev/null 2>&1
+    systemctl restart fail2ban
+    echo "Fail2Ban installed and configured for SSH."
+}
+
 # Function to restart services
 restart_services() {
-    echo "[6/7] Restarting SSH service..."
+    echo "[7/8] Restarting SSH service..."
     systemctl enable ssh 2>/dev/null || systemctl enable sshd 2>/dev/null
     systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || service ssh restart 2>/dev/null
-    echo "SSH service restarted."
+    if [ $? -ne 0 ]; then
+        echo "Warning: Failed to restart SSH service." >&2
+    else
+        echo "SSH service restarted."
+    fi
 }
 
 # Function to get system info
 get_system_info() {
-    echo "[7/7] Gathering system information..."
-    if command -v curl >/dev/null 2>&1; then
-        PUBLIC_IP=$(curl -s -m 5 ifconfig.me || curl -s -m 5 ipinfo.io/ip || curl -s -m 5 icanhazip.com)
-    else
-        apt-get install -y curl
-        PUBLIC_IP=$(curl -s -m 5 ifconfig.me || curl -s -m 5 ipinfo.io/ip || curl -s -m 5 icanhazip.com)
+    echo "[8/8] Gathering system information..."
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "Installing curl..."
+        apt-get install -y curl > /dev/null 2>&1
     fi
+    # Try multiple IP services with timeouts
+    PUBLIC_IP=$(curl -s -m 5 ifconfig.me || curl -s -m 5 ipinfo.io/ip || curl -s -m 5 icanhazip.com)
     
     if [ -z "$PUBLIC_IP" ]; then
         PUBLIC_IP=$(hostname -I | awk '{print $1}')
+        echo "Could not fetch public IP, using local IP: $PUBLIC_IP"
     fi
 }
 
@@ -353,38 +409,38 @@ main() {
     echo "3. Configure debian user"
     echo "4. Update hosts file"
     echo "5. Install and configure SSH"
-    echo "6. Restart services"
+    echo "6. Install Fail2Ban (Bruteforce Protection)"
+    echo "7. Restart services"
+    echo "8. Get system info"
     echo "=============================================="
     
+    # Run all functions
     update_system
     set_root_password
     setup_debian_user
     configure_hosts
     setup_ssh
+    install_bruteforce_protection
     restart_services
     get_system_info
     
+    # Final summary output
     echo ""
     echo "=== SETUP COMPLETED SUCCESSFULLY ==="
     echo "IPv4 Address: $PUBLIC_IP"
     echo "SSH User: root"
-    echo "Root Password: $ROOT_PASS"
+    echo "Root Password: $ROOT_PASS" # This variable is set in set_root_password
     echo "SSH Port: 22"
-    # echo ""
-    # echo "You can now connect using:"
-    # echo "ssh root@$PUBLIC_IP"
-    # echo ""
-    # echo "=== IMPORTANT ==="
-    # echo "Save the root password shown above!"
     echo "================================"
     
     # Save password to file
-    # echo "Root password: $ROOT_PASS" > /root/password.txt
-    # chmod 600 /root/password.txt
-    # echo "Password saved to /root/password.txt"
+    echo "Root password: $ROOT_PASS" > /root/password.txt
+    chmod 600 /root/password.txt
+    echo "Password saved to /root/password.txt"
 }
 
-# Run main function and handle errors
+# Run main function and pipe stdout/stderr to a log file
+# The 'tee' command will also print it to stdout, which PowerShell will show
 main 2>&1 | tee /var/log/vps-setup.log
 exit 0
 '@
@@ -424,7 +480,6 @@ function Start-CompleteVPSSetup {
     Save-UnixScript -Content $setupScript -FilePath $tempFile
     
     Write-Host "Setup script created at: $tempFile" -ForegroundColor Yellow
-    Write-Host "Script size: $((Get-Item $tempFile).Length) bytes" -ForegroundColor Gray
     
     # Copy setup script ke VPS
     Write-Host "Copying setup script to VPS..." -ForegroundColor Yellow
@@ -438,10 +493,9 @@ function Start-CompleteVPSSetup {
         "debian@${VpsIP}:/tmp/vps_setup.sh"
     )
     
-    Write-Host "Executing: scp [args] $tempFile debian@${VpsIP}:/tmp/vps_setup.sh" -ForegroundColor Gray
-    
     $scpResult = & scp @scpArgs 2>&1
     
+    # *** MODIFIED: Capture remote output by reading log file ***
     if ($LASTEXITCODE -eq 0) {
         Write-Host "Setup script copied successfully." -ForegroundColor Green
         
@@ -459,50 +513,68 @@ function Start-CompleteVPSSetup {
             "sudo bash /tmp/vps_setup.sh"
         )
         
-        Write-Host "Executing: ssh [args] debian@$VpsIP 'sudo bash /tmp/vps_setup.sh'" -ForegroundColor Gray
-        
         # Jalankan SSH dan tampilkan output real-time
         $processInfo = New-Object System.Diagnostics.ProcessStartInfo
         $processInfo.FileName = "ssh"
         $processInfo.Arguments = $sshArgs
-        $processInfo.RedirectStandardOutput = $false
-        $processInfo.RedirectStandardError = $false
+        $processInfo.RedirectStandardOutput = $false # Allow real-time output
+        $processInfo.RedirectStandardError = $false # Allow real-time output
         $processInfo.UseShellExecute = $false
         $processInfo.CreateNoWindow = $false
         
         $process = New-Object System.Diagnostics.Process
         $process.StartInfo = $processInfo
         
-        Write-Host "Starting remote setup process..." -ForegroundColor Yellow
+        Write-Host "Starting remote setup process (output will appear below)..." -ForegroundColor Yellow
         $process.Start() | Out-Null
+        $process.WaitForExit() # Wait for the process to finish
         
-        # Tunggu proses selesai dengan timeout
-        $timeout = 600 # 10 minutes
-        $startTime = Get-Date
+        $sshExitCode = $process.ExitCode
         
-        while (!$process.HasExited) {
-            $elapsed = (Get-Date) - $startTime
-            if ($elapsed.TotalSeconds -gt $timeout) {
-                Write-Host "Timeout reached, killing process..." -ForegroundColor Red
-                $process.Kill()
-                break
+        # Cleanup local script
+        Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
+        
+        if ($sshExitCode -eq 0) {
+            Write-Host "VPS setup script finished execution." -ForegroundColor Green
+            Write-Host "Fetching credentials from remote log..." -ForegroundColor Yellow
+            
+            # Now, fetch the log file to parse credentials
+            $sshCatArgs = @(
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
+                "-o", "ConnectTimeout=30",
+                "-i", $SSHKeyPath,
+                "debian@$VpsIP",
+                "sudo cat /var/log/vps-setup.log && sudo rm /var/log/vps-setup.log && sudo rm /tmp/vps_setup.sh" # Cat and cleanup
+            )
+            
+            $logContent = & ssh @sshCatArgs 2>&1
+            
+            # Parse output untuk kredensial
+            $ip_remote = ($logContent | Select-String -Pattern "IPv4 Address:\s+(.*)" | ForEach-Object { $_.Matches.Groups[1].Value.Trim() }) | Select-Object -Last 1
+            $pass_remote = ($logContent | Select-String -Pattern "Root Password:\s+(.*)" | ForEach-Object { $_.Matches.Groups[1].Value.Trim() }) | Select-Object -Last 1
+
+            if (-not [string]::IsNullOrEmpty($ip_remote) -and -not [string]::IsNullOrEmpty($pass_remote)) {
+                 # Kembalikan object dengan kredensial
+                 return [PSCustomObject]@{ IP = $ip_remote; User = "root"; Password = $pass_remote }
+            } else {
+                # Fallback jika parsing gagal
+                Write-Host "Warning: Could not parse credentials from remote log." -ForegroundColor Yellow
+                return [PSCustomObject]@{ IP = $VpsIP; User = "root"; Password = "(Gagal parse, cek VPS)" }
             }
-            Start-Sleep -Seconds 5
-            Write-Host "Still running... ($([math]::Round($elapsed.TotalSeconds)) seconds)" -ForegroundColor Gray
-        }
-        
-        if ($process.ExitCode -eq 0) {
-            Write-Host "VPS setup completed successfully!" -ForegroundColor Green
+            
         } else {
-            Write-Host "SSH process completed with exit code: $($process.ExitCode)" -ForegroundColor Yellow
+            Write-Host "SSH process completed with exit code: $sshExitCode" -ForegroundColor Red
+            return $null # Failure
         }
     } else {
         Write-Host "Error: Failed to copy setup script to VPS." -ForegroundColor Red
         Write-Host "SCP Output: $scpResult" -ForegroundColor Red
+        # Cleanup
+        Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
+        return $null # Failure
     }
-    
-    # Cleanup
-    Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
+    # *** END MODIFICATION ***
 }
 
 # Main script function
@@ -512,7 +584,6 @@ function Main {
     )
     
     Write-Host "=== COMPLETE VPS SETUP AUTOMATION FOR DEBIAN ===" -ForegroundColor Cyan
-    Write-Host "Fixed Version - No CRLF Issues" -ForegroundColor Green
     Write-Host ""
     
     # Check prerequisites
@@ -533,47 +604,89 @@ function Main {
     
     Write-Host "=== VPS Connection & Setup ===" -ForegroundColor Cyan
     
-    # Get VPS IP
-    if ($Args.Count -ge 1 -and $Args[0] -match '^\d+\.\d+\.\d+\.\d+$') {
-        $vps_ip = $Args[0]
-        Write-Host "Using VPS IP: $vps_ip" -ForegroundColor Green
+    # *** MODIFIED: Get Multiple IPs ***
+    $vpsIPsToProcess = @()
+    if ($Args.Count -ge 1) {
+        Write-Host "Akan memproses IP dari argumen: $($Args -join ', ')" -ForegroundColor Green
+        $vpsIPsToProcess = $Args | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' }
     } else {
-        do {
-            $vps_ip = Read-Host "Masukkan IP VPS"
-            if ($vps_ip -notmatch '^\d+\.\d+\.\d+\.\d+$') {
-                Write-Host "Invalid IP format. Please enter a valid IP address." -ForegroundColor Red
-            }
-        } while ($vps_ip -notmatch '^\d+\.\d+\.\d+\.\d+$')
+        $ipString = Read-Host "Masukkan IP VPS (pisahkan dengan spasi, tekan ENTER untuk selesai)"
+        $vpsIPsToProcess = $ipString -split ' ' | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' }
     }
+
+    if ($vpsIPsToProcess.Count -eq 0) {
+        Write-Host "Error: Tidak ada IP VPS yang dimasukkan atau format salah." -ForegroundColor Red
+        exit 1
+    }
+    # *** END MODIFICATION ***
     
     # Set global SSH_DIR
     $Global:SSH_DIR = $sshInfo.SSH_DIR
     
-    # Clean known_hosts
-    Clean-KnownHosts -VpsIP $vps_ip
-    
-    # Copy SSH key
-    Write-Host "Setting up SSH key authentication..." -ForegroundColor Cyan
-    $keyCopied = Copy-SSHKey -VpsIP $vps_ip -SSHKeyPath $sshInfo.PrivateKey
-    
-    if ($keyCopied) {
-        Write-Host "SSH authentication configured successfully." -ForegroundColor Green
-    } else {
-        Write-Host "SSH authentication may have issues, but continuing..." -ForegroundColor Yellow
+    # Array untuk menyimpan hasil
+    $setupResults = @()
+
+    # *** MODIFIED: Loop for each IP ***
+    foreach ($vps_ip in $vpsIPsToProcess) {
+        Write-Host ""
+        Write-Host "=====================================================" -ForegroundColor Cyan
+        Write-Host "=== MEMULAI SETUP UNTUK VPS: $vps_ip ===" -ForegroundColor Cyan
+        Write-Host "=====================================================" -ForegroundColor Cyan
+        
+        $setupSuccessful = $false
+        
+        # *** MODIFIED: Added Retry Loop ***
+        while (-not $setupSuccessful) {
+            # Clean known_hosts
+            Clean-KnownHosts -VpsIP $vps_ip
+            
+            # Copy SSH key
+            Write-Host "Setting up SSH key authentication for $vps_ip..." -ForegroundColor Cyan
+            $keyCopied = Copy-SSHKey -VpsIP $vps_ip -SSHKeyPath $sshInfo.PrivateKey
+            
+            if ($keyCopied) {
+                Write-Host "SSH authentication configured successfully." -ForegroundColor Green
+                
+                # Run complete setup
+                Write-Host "Starting complete VPS setup for $vps_ip..." -ForegroundColor Cyan
+                $setupResultObject = Start-CompleteVPSSetup -VpsIP $vps_ip -SSHKeyPath $sshInfo.PrivateKey
+                
+                if ($setupResultObject -ne $null) {
+                    $setupSuccessful = $true
+                    Write-Host "Setup finished successfully for $vps_ip." -ForegroundColor Green
+                    # Tambahkan hasil ke array
+                    $resultString = "IP: $($setupResultObject.IP) | User: $($setupResultObject.User) | Password: $($setupResultObject.Password)"
+                    $setupResults += $resultString
+                } else {
+                    Write-Host "Remote execution (Start-CompleteVPSSetup) failed for $vps_ip." -ForegroundColor Red
+                }
+            } else {
+                Write-Host "SSH key copy (Copy-SSHKey) failed for $vps_ip." -ForegroundColor Red
+            }
+            
+            if (-not $setupSuccessful) {
+                Write-Host "Setup failed for $vps_ip. Retrying in 10 seconds... (Press Ctrl+C to cancel)" -ForegroundColor Yellow
+                Start-Sleep -Seconds 10
+            }
+        }
+        # *** END MODIFICATION (Retry Loop) ***
     }
+    # *** END MODIFICATION (ForEach IP Loop) ***
     
-    # Run complete setup
-    Write-Host "Starting complete VPS setup..." -ForegroundColor Cyan
-    Start-CompleteVPSSetup -VpsIP $vps_ip -SSHKeyPath $sshInfo.PrivateKey
     
-    # Write-Host ""
-    # Write-Host "=== SETUP PROCESS COMPLETED ===" -ForegroundColor Green
-    # Write-Host "Check the output above for root password and connection details." -ForegroundColor White
-    # Write-Host "Connect using: ssh root@$vps_ip" -ForegroundColor Yellow
-    # Write-Host ""
-    # Write-Host "SSH Keys location:" -ForegroundColor Cyan
-    # Write-Host "Private: $($sshInfo.PrivateKey)" -ForegroundColor White
-    # Write-Host "Public:  $($sshInfo.PublicKey)" -ForegroundColor White
+    # *** MODIFIED: Print Final Summary ***
+    Write-Host ""
+    Write-Host "=== RINGKASAN HASIL SETUP ===" -ForegroundColor Cyan
+    if ($setupResults.Count -gt 0) {
+        $setupResults | ForEach-Object { Write-Host $_ -ForegroundColor White }
+    } else {
+        Write-Host "Tidak ada setup VPS yang berhasil diselesaikan." -ForegroundColor Yellow
+    }
+    Write-Host "==============================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "SSH Keys location:" -ForegroundColor Cyan
+    Write-Host "Private: $($sshInfo.PrivateKey)" -ForegroundColor White
+    Write-Host "Public:  $($sshInfo.PublicKey)" -ForegroundColor White
 }
 
 # Handle uncaught exceptions
