@@ -155,7 +155,7 @@ function Copy-SSHKey {
 
 # Fungsi untuk membuat setup script yang akan dijalankan di VPS
 function New-VPSSetupScript {
-    # Skrip bash internal (tidak diubah)
+    # Skrip bash internal (telah dibersihkan dari spasi tidak valid)
     $setupScript = @'
 #!/bin/bash
 
@@ -175,8 +175,8 @@ generate_password() {
 # Function to update system packages
 update_system() {
     echo -e "\n[1/7] Updating system packages..."
-    apt update -y
-    apt upgrade -y
+    apt update -y > /dev/null 2>&1
+    apt upgrade -y > /dev/null 2>&1
     echo "System updated successfully."
 }
 
@@ -240,7 +240,7 @@ install_openssh() {
     if command -v ssh >/dev/null 2>&1; then
         echo "OpenSSH is already installed."
     else
-        apt install -y openssh-server
+        apt install -y openssh-server > /dev/null 2>&1
         echo "OpenSSH server installed successfully."
     fi
 }
@@ -280,14 +280,14 @@ restart_ssh_service() {
     echo -e "\n[7/7] Restarting SSH service..."
     
     # Enable SSH service to start on boot
-    systemctl enable ssh
+    systemctl enable ssh > /dev/null 2>&1
     
     # Restart SSH service
     if systemctl restart ssh; then
         echo "SSH service restarted successfully."
     else
         echo "Warning: Failed to restart SSH service. Trying alternative method..."
-        service ssh restart || /etc/init.d/ssh restart
+        service ssh restart > /dev/null 2>&1 || /etc/init.d/ssh restart > /dev/null 2>&1
     fi
 }
 
@@ -297,13 +297,13 @@ get_vps_ip() {
     
     # Try multiple methods to get public IP
     if command -v curl >/dev/null 2>&1; then
-        vps_ip=$(curl -s ifconfig.me) || 
-        vps_ip=$(curl -s ipinfo.io/ip) || 
-        vps_ip=$(curl -s icanhazip.com)
+        vps_ip=$(curl -s -m 5 ifconfig.me) || 
+        vps_ip=$(curl -s -m 5 ipinfo.io/ip) || 
+        vps_ip=$(curl -s -m 5 icanhazip.com)
     elif command -v wget >/dev/null 2>&1; then
-        vps_ip=$(wget -qO- ifconfig.me) || 
-        vps_ip=$(wget -qO- ipinfo.io/ip) || 
-        vps_ip=$(wget -qO- icanhazip.com)
+        vps_ip=$(wget -qO- -T 5 ifconfig.me) || 
+        vps_ip=$(wget -qO- -T 5 ipinfo.io/ip) || 
+        vps_ip=$(wget -qO- -T 5 icanhazip.com)
     fi
     
     # If all methods fail, use local IP
@@ -318,15 +318,15 @@ install_dependencies() {
     echo -e "Installing required dependencies..."
     
     # Update package list first
-    apt update -y
+    apt update -y > /dev/null 2>&1
     
     # Install curl if not present (for IP detection)
     if ! command -v curl >/dev/null 2>&1; then
-        apt install -y curl
+        apt install -y curl > /dev/null 2>&1
     fi
     
     # Install common utilities
-    apt install -y openssl
+    apt install -y openssl > /dev/null 2>&1
 }
 
 # Main execution function
@@ -395,7 +395,7 @@ function Save-UnixScript {
     # Convert to UNIX line endings (LF only)
     $Content = $Content -replace "`r`n", "`n" -replace "`r", "`n"
     
-    # Gun encoding UTF-8 tanpa BOM
+    # Gunakan encoding UTF-8 tanpa BOM
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($FilePath, $Content, $utf8NoBom)
 }
@@ -432,7 +432,7 @@ function Start-CompleteVPSSetup {
     
     $scpResult = & scp @scpArgs 2>&1
     
-    # *** MODIFIED: Add return $false on failure and move cleanup ***
+    # *** MODIFIED: Capture remote output and return object ***
     if ($LASTEXITCODE -eq 0) {
         Write-Host "Setup script copied successfully." -ForegroundColor Green
         
@@ -450,25 +450,42 @@ function Start-CompleteVPSSetup {
         
         Write-Host "Running remote setup (this may take a few minutes)..." -ForegroundColor Cyan
         
-        # Jalankan SSH process
-        $process = Start-Process -FilePath "ssh" -ArgumentList $sshArgs -Wait -PassThru -NoNewWindow
+        # Jalankan SSH process dan tangkap outputnya
+        $remoteOutput = & ssh @sshArgs 2>&1
+        $sshExitCode = $LASTEXITCODE
+        
+        # Tampilkan output ke user
+        Write-Host $remoteOutput
         
         # Cleanup
         Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
         
-        if ($process.ExitCode -eq 0) {
+        if ($sshExitCode -eq 0) {
             Write-Host "VPS setup completed successfully!" -ForegroundColor Green
-            return $true # Success
+            
+            # Parse output untuk kredensial
+            $ip_remote = ($remoteOutput | Select-String -Pattern "IPv4\s+:\s+(.*)" | ForEach-Object { $_.Matches.Groups[1].Value.Trim() }) | Select-Object -Last 1
+            $pass_remote = ($remoteOutput | Select-String -Pattern "Password\s+:\s+(.*)" | ForEach-Object { $_.Matches.Groups[1].Value.Trim() }) | Select-Object -Last 1
+
+            if (-not [string]::IsNullOrEmpty($ip_remote) -and -not [string]::IsNullOrEmpty($pass_remote)) {
+                 # Kembalikan object dengan kredensial
+                 return [PSCustomObject]@{ IP = $ip_remote; User = "root"; Password = $pass_remote }
+            } else {
+                # Fallback jika parsing gagal
+                Write-Host "Warning: Could not parse credentials from output." -ForegroundColor Yellow
+                return [PSCustomObject]@{ IP = $VpsIP; User = "root"; Password = "(Gagal parse, cek log)" }
+            }
+            
         } else {
-            Write-Host "SSH process completed with exit code: $($process.ExitCode)" -ForegroundColor Yellow
-            return $false # Failure
+            Write-Host "SSH process completed with exit code: $sshExitCode" -ForegroundColor Yellow
+            return $null # Failure
         }
     } else {
         Write-Host "Error: Could not copy setup script to VPS." -ForegroundColor Red
         Write-Host "SCP Output: $scpResult" -ForegroundColor Red
         # Cleanup
         Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
-        return $false # Failure
+        return $null # Failure
     }
     # *** END MODIFICATION ***
 }
@@ -480,7 +497,6 @@ function Main {
     )
     
     Write-Host "=== COMPLETE VPS SETUP AUTOMATION ===" -ForegroundColor Cyan
-    Write-Host "Simple Version - No Additional Security Features" -ForegroundColor Green
     Write-Host ""
     
     # Check prerequisites
@@ -495,66 +511,92 @@ function Main {
     
     Write-Host "=== VPS Connection & Setup ===" -ForegroundColor Cyan
     
-    # Get VPS IP
-    if ($Args.Count -ge 1 -and $Args[0] -match '^\d+\.\d+\.\d+\.\d+$') {
-        $vps_ip = $Args[0]
-        Write-Host "Using VPS IP: $vps_ip" -ForegroundColor Green
+    # *** MODIFIED: Get Multiple IPs ***
+    $vpsIPsToProcess = @()
+    if ($Args.Count -ge 1) {
+        Write-Host "Akan memproses IP dari argumen: $($Args -join ', ')" -ForegroundColor Green
+        $vpsIPsToProcess = $Args
     } else {
-        do {
-            $vps_ip = Read-Host "Masukkan IP VPS"
-            if ($vps_ip -notmatch '^\d+\.\d+\.\d+\.\d+$') {
-                Write-Host "Invalid IP format. Please enter a valid IP address." -ForegroundColor Red
-            }
-        } while ($vps_ip -notmatch '^\d+\.\d+\.\d+\.\d+$')
+        $ipString = Read-Host "Masukkan IP VPS (pisahkan dengan spasi, tekan ENTER untuk selesai)"
+        # Filter input untuk memastikan hanya format IP yang valid
+        $vpsIPsToProcess = $ipString -split ' ' | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' }
+    }
+
+    if ($vpsIPsToProcess.Count -eq 0) {
+        Write-Host "Error: Tidak ada IP VPS yang dimasukkan atau format salah." -ForegroundColor Red
+        exit 1
     }
     
     # Set global SSH_DIR
     $Global:SSH_DIR = $sshInfo.SSH_DIR
     
-    # Clean known_hosts sebelum mulai
-    Clean-KnownHosts -VpsIP $vps_ip
-    
-    # *** MODIFIED: Add retry loop ***
-    $setupSuccessful = $false
-    while (-not $setupSuccessful) {
-        Write-Host "Attempting to run complete setup on VPS ($vps_ip)..." -ForegroundColor Cyan
+    # Array untuk menyimpan hasil
+    $setupResults = @()
+
+    # *** MODIFIED: Loop for each IP ***
+    foreach ($vps_ip in $vpsIPsToProcess) {
+        Write-Host ""
+        Write-Host "=====================================================" -ForegroundColor Cyan
+        Write-Host "=== MEMULAI SETUP UNTUK VPS: $vps_ip ===" -ForegroundColor Cyan
+        Write-Host "=====================================================" -ForegroundColor Cyan
         
-        # 1. Copy Key
-        $keyCopied = Copy-SSHKey -VpsIP $vps_ip -SSHKeyPath $sshInfo.PrivateKey
+        # Clean known_hosts sebelum mulai
+        Clean-KnownHosts -VpsIP $vps_ip
         
-        if ($keyCopied) {
-            Write-Host "SSH authentication configured successfully." -ForegroundColor Green
+        # *** MODIFIED: Add retry loop ***
+        $setupSuccessful = $false
+        while (-not $setupSuccessful) {
+            Write-Host "Attempting to run complete setup on VPS ($vps_ip)..." -ForegroundColor Cyan
             
-            # 2. Run Setup
-            $setupFinished = Start-CompleteVPSSetup -VpsIP $vps_ip -SSHKeyPath $sshInfo.PrivateKey
+            # 1. Copy Key
+            $keyCopied = Copy-SSHKey -VpsIP $vps_ip -SSHKeyPath $sshInfo.PrivateKey
             
-            if ($setupFinished) {
-                $setupSuccessful = $true
-                Write-Host "Setup finished successfully." -ForegroundColor Green
+            if ($keyCopied) {
+                Write-Host "SSH authentication configured successfully." -ForegroundColor Green
+                
+                # 2. Run Setup
+                $setupResultObject = Start-CompleteVPSSetup -VpsIP $vps_ip -SSHKeyPath $sshInfo.PrivateKey
+                
+                if ($setupResultObject -ne $null) {
+                    $setupSuccessful = $true
+                    Write-Host "Setup finished successfully for $vps_ip." -ForegroundColor Green
+                    
+                    # Tambahkan hasil ke array
+                    $resultString = "IP: $($setupResultObject.IP) | User: $($setupResultObject.User) | Password: $($setupResultObject.Password)"
+                    $setupResults += $resultString
+                    
+                } else {
+                    Write-Host "Remote execution (SSH) failed." -ForegroundColor Red
+                }
             } else {
-                Write-Host "Remote execution (SSH) failed." -ForegroundColor Red
+                Write-Host "Key copy (ssh-copy-id / scp) failed." -ForegroundColor Red
             }
-        } else {
-            Write-Host "Key copy (ssh-copy-id / scp) failed." -ForegroundColor Red
+            
+            if (-not $setupSuccessful) {
+                Write-Host "Setup failed. Retrying in 10 seconds... (Press Ctrl+C to cancel)" -ForegroundColor Yellow
+                Start-Sleep -Seconds 10
+                # Clean hosts again
+                Clean-KnownHosts -VpsIP $vps_ip
+            }
         }
-        
-        if (-not $setupSuccessful) {
-            Write-Host "Setup failed. Retrying in 10 seconds... (Press Ctrl+C to cancel)" -ForegroundColor Yellow
-            Start-Sleep -Seconds 10
-            # Clean hosts again
-            Clean-KnownHosts -VpsIP $vps_ip
-        }
+        # *** END MODIFICATION (Retry Loop) ***
     }
-    # *** END MODIFICATION ***
+    # *** END MODIFICATION (ForEach IP Loop) ***
     
-    # Write-Host ""
-    # Write-Host "=== LOCAL SETUP COMPLETED ===" -ForegroundColor Green
-    # Write-Host "VPS setup finished. Check the information above for SSH credentials."
-    # Write-Host "You can manually connect using: ssh root@$vps_ip" -ForegroundColor Yellow
-    # Write-Host ""
-    # Write-Host "SSH Keys location:" -ForegroundColor Cyan
-    # Write-Host "Private: $($sshInfo.PrivateKey)" -ForegroundColor White
-    # Write-Host "Public:  $($sshInfo.PublicKey)" -ForegroundColor White
+    
+    # *** MODIFIED: Print Final Summary ***
+    Write-Host ""
+    Write-Host "=== RINGKASAN HASIL SETUP ===" -ForegroundColor Cyan
+    if ($setupResults.Count -gt 0) {
+        $setupResults | ForEach-Object { Write-Host $_ -ForegroundColor White }
+    } else {
+        Write-Host "Tidak ada setup VPS yang berhasil diselesaikan." -ForegroundColor Yellow
+    }
+    Write-Host "==============================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "SSH Keys location:" -ForegroundColor Cyan
+    Write-Host "Private: $($sshInfo.PrivateKey)" -ForegroundColor White
+    Write-Host "Public:  $($sshInfo.PublicKey)" -ForegroundColor White
 }
 
 # Handle uncaught exceptions
