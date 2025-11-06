@@ -12,35 +12,47 @@ function Generate-SSHKey {
         New-Item -ItemType Directory -Path $SSH_DIR -Force | Out-Null
     }
     
-    # Hapus file key yang sudah ada jika ada
+    # Path file key
     $privateKeyPath = Join-Path $SSH_DIR "id_rsa"
     $publicKeyPath = Join-Path $SSH_DIR "id_rsa.pub"
     
+    # *** MODIFIED: Add interactive y/n prompt ***
+    $generateNewKey = $true
     if (Test-Path $privateKeyPath) {
         Write-Host "$privateKeyPath already exists." -ForegroundColor Yellow
-        Write-Host "Overwriting existing keys..." -ForegroundColor Yellow
-        Remove-Item $privateKeyPath -Force -ErrorAction SilentlyContinue
-        Remove-Item $publicKeyPath -Force -ErrorAction SilentlyContinue
+        $overwriteChoice = Read-Host "Overwrite (y/n)?"
+        
+        if ($overwriteChoice -match '^[Yy]$') {
+            Write-Host "Overwriting existing keys..." -ForegroundColor Yellow
+            Remove-Item $privateKeyPath -Force -ErrorAction SilentlyContinue
+            Remove-Item $publicKeyPath -Force -ErrorAction SilentlyContinue
+        } else {
+            Write-Host "Using existing key."
+            $generateNewKey = $false
+        }
     }
     
-    # Generate SSH key dengan passphrase kosong
-    Write-Host "Generating new SSH key..." -ForegroundColor Green
-    
-    # Gunakan ssh-keygen langsung
-    $keygenProcess = Start-Process -FilePath "ssh-keygen" -ArgumentList @("-t", "rsa", "-b", "4096", "-C", "ez@ezlabsnodes", "-f", $privateKeyPath, "-N", '""', "-q") -Wait -PassThru -NoNewWindow
-    
-    # Tunggu sebentar untuk memastikan file tercreate
-    Start-Sleep -Seconds 2
-    
-    # Verifikasi file created
-    if (Test-Path $publicKeyPath) {
-        Write-Host "SSH key generated successfully" -ForegroundColor Green
-    } else {
-        Write-Host "Warning: SSH key generation might have issues" -ForegroundColor Yellow
+    if ($generateNewKey) {
+        Write-Host "Generating new SSH key..." -ForegroundColor Green
+        
+        # Gunakan ssh-keygen langsung
+        $keygenProcess = Start-Process -FilePath "ssh-keygen" -ArgumentList @("-t", "rsa", "-b", "4096", "-C", "ez@ezlabsnodes", "-f", $privateKeyPath, "-N", '""', "-q") -Wait -PassThru -NoNewWindow
+        
+        # Tunggu sebentar untuk memastikan file tercreate
+        Start-Sleep -Seconds 2
+        
+        # Verifikasi file created
+        if (Test-Path $publicKeyPath) {
+            Write-Host "SSH key generated successfully" -ForegroundColor Green
+        } else {
+            Write-Host "Warning: SSH key generation might have issues" -ForegroundColor Yellow
+        }
+        
+        Write-Host "Your identification has been saved in $privateKeyPath" -ForegroundColor Green
+        Write-Host "Your public key has been saved in $publicKeyPath" -ForegroundColor Green
     }
+    # *** END MODIFICATION ***
     
-    Write-Host "Your identification has been saved in $privateKeyPath" -ForegroundColor Green
-    Write-Host "Your public key has been saved in $publicKeyPath" -ForegroundColor Green
     Write-Host ""
     
     # Tampilkan public key untuk dicopy
@@ -99,9 +111,10 @@ function Copy-SSHKey {
     
     Write-Host "Attempting to copy SSH key to ubuntu@$VpsIP..." -ForegroundColor Yellow
     
-    # Method 1: Using ssh-copy-id
+    # Method 1: Using ssh-copy-id (set timeout)
     try {
-        $process = Start-Process -FilePath "ssh-copy-id" -ArgumentList @("-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-i", $publicKeyPath, "ubuntu@$VpsIP") -Wait -PassThru -NoNewWindow
+        # *** MODIFIED: Added ConnectTimeout ***
+        $process = Start-Process -FilePath "ssh-copy-id" -ArgumentList @("-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=10", "-i", $publicKeyPath, "ubuntu@$VpsIP") -Wait -PassThru -NoNewWindow
         
         if ($process.ExitCode -eq 0) {
             Write-Host "SSH key copied successfully to VPS." -ForegroundColor Green
@@ -111,7 +124,7 @@ function Copy-SSHKey {
         Write-Host "ssh-copy-id failed: $($_.Exception.Message)" -ForegroundColor Yellow
     }
     
-    # Method 2: Manual copy
+    # Method 2: Manual copy (set timeout)
     Write-Host "Trying alternative method to copy SSH key..." -ForegroundColor Yellow
     
     try {
@@ -123,24 +136,26 @@ function Copy-SSHKey {
         
         $command = "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && echo 'Key added successfully'"
         
-        $process2 = Start-Process -FilePath "ssh" -ArgumentList @("-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-i", $SSHKeyPath, "ubuntu@$VpsIP", $command) -Wait -PassThru -NoNewWindow -RedirectStandardInput $tempFile
+        # *** MODIFIED: Added ConnectTimeout ***
+        $process2 = Start-Process -FilePath "ssh" -ArgumentList @("-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=10", "-i", $SSHKeyPath, "ubuntu@$VpsIP", $command) -Wait -PassThru -NoNewWindow -RedirectStandardInput $tempFile
         
         Remove-Item $tempFile -Force
         
         if ($process2.ExitCode -eq 0) {
-            Write-Host "SSH key setup completed." -ForegroundColor Green
+            Write-Host "SSH key setup completed (alternative)." -ForegroundColor Green
             return $true
         }
     } catch {
         Write-Host "Alternative method failed: $($_.Exception.Message)" -ForegroundColor Red
     }
     
-    Write-Host "Warning: SSH key copy may have issues, but continuing..." -ForegroundColor Yellow
+    Write-Host "Error: Both SSH key copy methods failed." -ForegroundColor Red
     return $false
 }
 
 # Fungsi untuk membuat setup script yang akan dijalankan di VPS
 function New-VPSSetupScript {
+    # Skrip bash internal (tidak diubah)
     $setupScript = @'
 #!/bin/bash
 
@@ -417,6 +432,7 @@ function Start-CompleteVPSSetup {
     
     $scpResult = & scp @scpArgs 2>&1
     
+    # *** MODIFIED: Add return $false on failure and move cleanup ***
     if ($LASTEXITCODE -eq 0) {
         Write-Host "Setup script copied successfully." -ForegroundColor Green
         
@@ -437,18 +453,24 @@ function Start-CompleteVPSSetup {
         # Jalankan SSH process
         $process = Start-Process -FilePath "ssh" -ArgumentList $sshArgs -Wait -PassThru -NoNewWindow
         
+        # Cleanup
+        Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
+        
         if ($process.ExitCode -eq 0) {
             Write-Host "VPS setup completed successfully!" -ForegroundColor Green
+            return $true # Success
         } else {
             Write-Host "SSH process completed with exit code: $($process.ExitCode)" -ForegroundColor Yellow
+            return $false # Failure
         }
     } else {
         Write-Host "Error: Could not copy setup script to VPS." -ForegroundColor Red
         Write-Host "SCP Output: $scpResult" -ForegroundColor Red
+        # Cleanup
+        Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
+        return $false # Failure
     }
-    
-    # Cleanup
-    Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
+    # *** END MODIFICATION ***
 }
 
 # Main script
@@ -468,7 +490,7 @@ function Main {
         exit 1
     }
     
-    # Generate SSH key
+    # Generate SSH key (akan meminta overwrite jika perlu)
     $sshInfo = Generate-SSHKey
     
     Write-Host "=== VPS Connection & Setup ===" -ForegroundColor Cyan
@@ -492,19 +514,38 @@ function Main {
     # Clean known_hosts sebelum mulai
     Clean-KnownHosts -VpsIP $vps_ip
     
-    # Copy SSH key terlebih dahulu
-    Write-Host "Setting up SSH key authentication..." -ForegroundColor Cyan
-    $keyCopied = Copy-SSHKey -VpsIP $vps_ip -SSHKeyPath $sshInfo.PrivateKey
-    
-    if ($keyCopied) {
-        Write-Host "SSH authentication configured successfully." -ForegroundColor Green
-    } else {
-        Write-Host "SSH authentication may have issues, but continuing..." -ForegroundColor Yellow
+    # *** MODIFIED: Add retry loop ***
+    $setupSuccessful = $false
+    while (-not $setupSuccessful) {
+        Write-Host "Attempting to run complete setup on VPS ($vps_ip)..." -ForegroundColor Cyan
+        
+        # 1. Copy Key
+        $keyCopied = Copy-SSHKey -VpsIP $vps_ip -SSHKeyPath $sshInfo.PrivateKey
+        
+        if ($keyCopied) {
+            Write-Host "SSH authentication configured successfully." -ForegroundColor Green
+            
+            # 2. Run Setup
+            $setupFinished = Start-CompleteVPSSetup -VpsIP $vps_ip -SSHKeyPath $sshInfo.PrivateKey
+            
+            if ($setupFinished) {
+                $setupSuccessful = $true
+                Write-Host "Setup finished successfully." -ForegroundColor Green
+            } else {
+                Write-Host "Remote execution (SSH) failed." -ForegroundColor Red
+            }
+        } else {
+            Write-Host "Key copy (ssh-copy-id / scp) failed." -ForegroundColor Red
+        }
+        
+        if (-not $setupSuccessful) {
+            Write-Host "Setup failed. Retrying in 10 seconds... (Press Ctrl+C to cancel)" -ForegroundColor Yellow
+            Start-Sleep -Seconds 10
+            # Clean hosts again
+            Clean-KnownHosts -VpsIP $vps_ip
+        }
     }
-    
-    # AUTO RUN SETUP - tanpa prompt
-    Write-Host "Menjalankan setup lengkap di VPS..." -ForegroundColor Green
-    Start-CompleteVPSSetup -VpsIP $vps_ip -SSHKeyPath $sshInfo.PrivateKey
+    # *** END MODIFICATION ***
     
     # Write-Host ""
     # Write-Host "=== LOCAL SETUP COMPLETED ===" -ForegroundColor Green
