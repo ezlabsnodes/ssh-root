@@ -1,4 +1,5 @@
 # complete-vps-setup.ps1 - Complete VPS Setup Script for PowerShell
+# Multi-IP, Fail2Ban Protection, Cleaned
 
 # Fungsi untuk generate SSH key
 function Generate-SSHKey {
@@ -156,6 +157,7 @@ function Copy-SSHKey {
 # Fungsi untuk membuat setup script yang akan dijalankan di VPS
 function New-VPSSetupScript {
     # Skrip bash internal (telah dibersihkan dari spasi tidak valid)
+    # *** MODIFIED: Added Fail2Ban function ***
     $setupScript = @'
 #!/bin/bash
 
@@ -174,7 +176,7 @@ generate_password() {
 
 # Function to update system packages
 update_system() {
-    echo -e "\n[1/7] Updating system packages..."
+    echo -e "\n[1/8] Updating system packages..."
     apt update -y > /dev/null 2>&1
     apt upgrade -y > /dev/null 2>&1
     echo "System updated successfully."
@@ -182,7 +184,7 @@ update_system() {
 
 # Function to set root password
 set_root_password() {
-    echo -e "\n[2/7] Setting root password..."
+    echo -e "\n[2/8] Setting root password..."
     
     # Generate random password
     root_pass=$(generate_password 16)
@@ -201,7 +203,7 @@ set_root_password() {
 
 # Function to add sudo user to sudo group
 add_user_to_sudo() {
-    echo -e "\n[3/7] Configuring sudo access..."
+    echo -e "\n[3/8] Configuring sudo access..."
     current_user=${SUDO_USER:-$(who am i | awk '{print $1}')}
     
     if [ -n "$current_user" ] && [ "$current_user" != "root" ]; then
@@ -219,7 +221,7 @@ add_user_to_sudo() {
 
 # Function to configure hosts file
 configure_hosts() {
-    echo -e "\n[4/7] Configuring /etc/hosts..."
+    echo -e "\n[4/8] Configuring /etc/hosts..."
     instance_name=$(hostname)
     
     # Backup original hosts file
@@ -234,7 +236,7 @@ configure_hosts() {
 
 # Function to install OpenSSH Server
 install_openssh() {
-    echo -e "\n[5/7] Installing OpenSSH server..."
+    echo -e "\n[5/8] Installing OpenSSH server..."
     
     # Check if SSH is already installed
     if command -v ssh >/dev/null 2>&1; then
@@ -247,7 +249,7 @@ install_openssh() {
 
 # Function to configure SSH daemon
 configure_ssh() {
-    echo -e "\n[6/7] Configuring SSH for root login with password..."
+    echo -e "\n[6/8] Configuring SSH for root login with password..."
     
     SSH_PORT="22"
     
@@ -275,9 +277,30 @@ EOL
     echo "SSH configuration updated."
 }
 
+# *** NEW FUNCTION: Install Fail2Ban ***
+install_bruteforce_protection() {
+    echo -e "\n[7/8] Installing Fail2Ban (Bruteforce Protection)..."
+    apt install -y fail2ban > /dev/null 2>&1
+    
+    # Create a basic local jail config for SSHD
+    cat > /etc/fail2ban/jail.local << 'EOF'
+[sshd]
+enabled = true
+port    = ssh
+logpath = %(sshd_log)s
+backend = %(sshd_backend)s
+maxretry = 5
+bantime  = 1h
+EOF
+    
+    systemctl enable fail2ban > /dev/null 2>&1
+    systemctl restart fail2ban
+    echo "Fail2Ban installed and configured for SSH."
+}
+
 # Function to restart SSH service
 restart_ssh_service() {
-    echo -e "\n[7/7] Restarting SSH service..."
+    echo -e "\n[8/8] Restarting SSH service..."
     
     # Enable SSH service to start on boot
     systemctl enable ssh > /dev/null 2>&1
@@ -339,6 +362,7 @@ main() {
     echo "4. Update hosts file"
     echo "5. Install/configure OpenSSH"
     echo "6. Enable root SSH login"
+    echo "7. Install Fail2Ban (Bruteforce Protection)"
     echo "================================================"
     
     # Install dependencies
@@ -351,6 +375,7 @@ main() {
     configure_hosts
     install_openssh
     configure_ssh
+    install_bruteforce_protection
     restart_ssh_service
     get_vps_ip
     
@@ -381,6 +406,7 @@ main() {
 # Run main function
 main
 '@
+    # *** END OF BASH SCRIPT ***
     
     return $setupScript
 }
@@ -445,7 +471,7 @@ function Start-CompleteVPSSetup {
             "-o", "ConnectTimeout=120",
             "-i", $SSHKeyPath,
             "ubuntu@$VpsIP",
-            "sudo bash /tmp/vps_complete_setup.sh"
+            "sudo bash /tmp/vps_complete_setup.sh && sudo rm /tmp/vps_complete_setup.sh" # Cleanup script
         )
         
         Write-Host "Running remote setup (this may take a few minutes)..." -ForegroundColor Cyan
