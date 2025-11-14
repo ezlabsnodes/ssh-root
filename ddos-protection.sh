@@ -21,7 +21,7 @@ install_fail2ban() {
     echo "Creating 'jail.local' configuration for SSH on port $SSH_PORT..."
     cat > /etc/fail2ban/jail.local << EOF
 [DEFAULT]
-bantime  = 1h
+bantime  = 3h
 findtime = 10m
 maxretry = 5
 
