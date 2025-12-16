@@ -32,11 +32,11 @@ install_fail2ban() {
     
     echo "Installing Fail2Ban..."
     if command -v apt-get > /dev/null; then
-        apt-get install -y fail2ban > /dev/null
+        apt-get install -y fail2ban > /dev/null 2>&1
     elif command -v yum > /dev/null; then
-        yum install -y fail2ban > /dev/null
+        yum install -y fail2ban > /dev/null 2>&1
     elif command -v dnf > /dev/null; then
-        dnf install -y fail2ban > /dev/null
+        dnf install -y fail2ban > /dev/null 2>&1
     fi
     
     echo "Creating 'jail.local' configuration for SSH on port $SSH_PORT..."
@@ -76,7 +76,7 @@ net.ipv4.conf.default.rp_filter = 1
 SYSCTL_EOF
 
     echo "Applying kernel changes..."
-    sysctl -p /etc/sysctl.d/99-ddos-protection.conf > /dev/null
+    sysctl -p /etc/sysctl.d/99-ddos-protection.conf > /dev/null 2>&1
     
     echo "Kernel hardening complete."
 }
@@ -110,7 +110,7 @@ deploy_to_vps() {
     echo "=========================================="
     
     # Upload script
-    if sshpass -p "$password" scp -o ConnectTimeout=10 -o StrictHostKeyChecking=no -P "$port" "ddos_protection.sh" "$user@$ip:/tmp/" 2>/dev/null; then
+    if sshpass -p "$password" scp -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o BatchMode=no -P "$port" "ddos_protection.sh" "$user@$ip:/tmp/" 2>/dev/null; then
         echo "✓ Script uploaded successfully"
     else
         echo "✗ Failed to upload script to $ip"
@@ -118,7 +118,8 @@ deploy_to_vps() {
     fi
     
     # Execute script
-    if sshpass -p "$password" ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -p "$port" "$user@$ip" "chmod +x /tmp/ddos_protection.sh && sudo /tmp/ddos_protection.sh $port" 2>/dev/null; then
+    echo "Executing protection script on $ip..."
+    if sshpass -p "$password" ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o BatchMode=no -p "$port" "$user@$ip" "chmod +x /tmp/ddos_protection.sh && sudo /tmp/ddos_protection.sh $port" 2>/dev/null; then
         echo "✓ Protection deployed successfully on $ip"
     else
         echo "✗ Failed to execute script on $ip"
@@ -126,7 +127,7 @@ deploy_to_vps() {
     fi
     
     # Cleanup
-    sshpass -p "$password" ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -p "$port" "$user@$ip" "rm -f /tmp/ddos_protection.sh" 2>/dev/null
+    sshpass -p "$password" ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o BatchMode=no -p "$port" "$user@$ip" "rm -f /tmp/ddos_protection.sh" 2>/dev/null
     
     echo "✓ Completed: $ip"
     echo ""
@@ -138,77 +139,128 @@ main() {
     echo "=== VPS DDoS & Brute Force Protection Auto Deployer ==="
     echo ""
     
-    # Input jumlah VPS
-    read -p "Enter number of VPS: " VPS_COUNT
+    # Otomatis set SSH port ke 22 tanpa konfirmasi
+    SSH_PORT=22
+    echo "Using SSH port: $SSH_PORT (automatically set)"
+    echo ""
     
-    # Validasi input
-    if ! [[ "$VPS_COUNT" =~ ^[1-9][0-9]*$ ]]; then
-        echo "Error: Please enter a valid number"
+    echo "Choose input method:"
+    echo "1. Enter VPS data manually (format: IP USERNAME PASSWORD)"
+    echo "2. Read from file"
+    read -p "Choose option (1 or 2): " INPUT_OPTION
+    
+    declare -a VPS_ENTRIES
+    
+    if [ "$INPUT_OPTION" = "1" ]; then
+        echo ""
+        echo "Enter VPS data in format: IP USERNAME PASSWORD"
+        echo "One per line. Type 'done' when finished."
+        echo ""
+        echo "Example:"
+        echo "192.168.1.100 root MyPass123"
+        echo "10.0.0.50 admin Admin@123"
+        echo ""
+        echo "Enter VPS data (or 'done' to finish):"
+        
+        while true; do
+            read -r line
+            if [ "$line" = "done" ]; then
+                break
+            fi
+            
+            # Clean the line
+            line=$(echo "$line" | xargs)
+            
+            # Check if line has at least 3 parts (ip, username, password)
+            if [ -n "$line" ]; then
+                # Count words in line
+                word_count=$(echo "$line" | wc -w)
+                if [ $word_count -ge 3 ]; then
+                    VPS_ENTRIES+=("$line")
+                    echo "Added: $line"
+                else
+                    echo "Invalid format: $line (should be: IP USERNAME PASSWORD)"
+                fi
+            fi
+        done
+    elif [ "$INPUT_OPTION" = "2" ]; then
+        read -p "Enter filename containing VPS list: " FILENAME
+        if [ ! -f "$FILENAME" ]; then
+            echo "File not found: $FILENAME"
+            exit 1
+        fi
+        
+        echo "Reading from file: $FILENAME"
+        while IFS= read -r line || [ -n "$line" ]; do
+            # Clean the line and skip empty/commented lines
+            line=$(echo "$line" | sed 's/#.*//' | xargs)
+            
+            if [ -n "$line" ]; then
+                # Count words in line
+                word_count=$(echo "$line" | wc -w)
+                if [ $word_count -ge 3 ]; then
+                    VPS_ENTRIES+=("$line")
+                else
+                    echo "Warning: Skipping invalid line (not enough fields): $line"
+                fi
+            fi
+        done < "$FILENAME"
+        
+        echo "Read ${#VPS_ENTRIES[@]} valid entries from file"
+    else
+        echo "Invalid option"
         exit 1
     fi
     
-    # Input port SSH (sama untuk semua VPS)
-    read -p "Enter SSH port for all VPS (default: 22): " SSH_PORT
-    SSH_PORT=${SSH_PORT:-22}
-    
-    # Input username (sama untuk semua VPS)
-    read -p "Enter username for all VPS (default: root): " USERNAME
-    USERNAME=${USERNAME:-root}
-    
-    echo ""
-    echo "Will deploy to $VPS_COUNT VPS using:"
-    echo "  SSH Port: $SSH_PORT"
-    echo "  Username: $USERNAME"
-    echo ""
-    
-    # Array untuk menyimpan data VPS
-    declare -a VPS_IPS
-    declare -a VPS_PASSWORDS
-    
-    # Input IP dan password untuk setiap VPS
-    for (( i=1; i<=$VPS_COUNT; i++ ))
-    do
-        echo "--- VPS $i of $VPS_COUNT ---"
-        read -p "Enter IP address for VPS $i: " ip
-        read -s -p "Enter password for VPS $i: " password
-        echo
-        
-        VPS_IPS[$i]=$ip
-        VPS_PASSWORDS[$i]=$password
-        echo ""
-    done
-    
-    # Buat script proteksi
-    echo "Creating protection script..."
-    create_protection_script
-    
-    # Konfirmasi deployment
-    echo ""
-    echo "=== SUMMARY ==="
-    echo "Ready to deploy protection to $VPS_COUNT VPS:"
-    for (( i=1; i<=$VPS_COUNT; i++ ))
-    do
-        echo "  VPS $i: ${VPS_IPS[$i]}"
-    done
-    echo ""
-    
-    read -p "Start deployment? (y/n): " confirm
-    if [[ ! $confirm =~ ^[Yy]$ ]]; then
-        echo "Deployment cancelled."
-        exit 0
+    # Check if we have any VPS data
+    if [ ${#VPS_ENTRIES[@]} -eq 0 ]; then
+        echo "Error: No valid VPS data provided"
+        exit 1
     fi
     
+    echo ""
+    echo "=== VPS LIST ==="
+    echo "Found ${#VPS_ENTRIES[@]} VPS entries:"
+    for i in "${!VPS_ENTRIES[@]}"; do
+        # Extract first two fields for display
+        ip=$(echo "${VPS_ENTRIES[$i]}" | awk '{print $1}')
+        username=$(echo "${VPS_ENTRIES[$i]}" | awk '{print $2}')
+        echo "  [$((i+1))] $username@$ip"
+    done
+    echo ""
+    echo "SSH Port: $SSH_PORT"
+    echo ""
+    
+    # Otomatis deploy tanpa konfirmasi
+    echo "Starting deployment in 3 seconds..."
+    sleep 3
     echo ""
     echo "Starting deployment..."
     echo ""
     
-    # Deploy ke setiap VPS
+    # Create protection script
+    echo "Creating protection script..."
+    create_protection_script
+    
+    # Deploy to each VPS
     success_count=0
     fail_count=0
     
-    for (( i=1; i<=$VPS_COUNT; i++ ))
-    do
-        if deploy_to_vps "${VPS_IPS[$i]}" "$SSH_PORT" "$USERNAME" "${VPS_PASSWORDS[$i]}"; then
+    for entry in "${VPS_ENTRIES[@]}"; do
+        # Extract fields from the entry
+        ip=$(echo "$entry" | awk '{print $1}')
+        username=$(echo "$entry" | awk '{print $2}')
+        # Get the rest as password (in case password contains spaces)
+        password=$(echo "$entry" | awk '{$1=$2=""; print substr($0,3)}' | xargs)
+        
+        # Skip if data is incomplete
+        if [ -z "$ip" ] || [ -z "$username" ] || [ -z "$password" ]; then
+            echo "✗ Skipping invalid entry: $entry"
+            ((fail_count++))
+            continue
+        fi
+        
+        if deploy_to_vps "$ip" "$SSH_PORT" "$username" "$password"; then
             ((success_count++))
         else
             ((fail_count++))
@@ -218,11 +270,11 @@ main() {
     # Cleanup local script
     rm -f ddos_protection.sh
     
-    # Tampilkan hasil
+    # Show results
     echo "=== DEPLOYMENT COMPLETED ==="
     echo "Successful: $success_count"
     echo "Failed: $fail_count"
-    echo "Total: $VPS_COUNT"
+    echo "Total: ${#VPS_ENTRIES[@]}"
     
     if [ $fail_count -eq 0 ]; then
         echo "✅ All VPS are now protected!"
