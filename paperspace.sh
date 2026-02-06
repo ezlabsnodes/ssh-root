@@ -1,4 +1,8 @@
 #!/bin/bash
+
+############################################
+# Generate SSH Key
+############################################
 generate_ssh_key() {
     echo "Generating public/private rsa key pair..."
 
@@ -17,77 +21,60 @@ generate_ssh_key() {
     if [ -f "$SSH_DIR/id_rsa" ]; then
         echo "$SSH_DIR/id_rsa already exists."
         read -p "Overwrite (y/n)? " overwrite_choice
-
         if [[ "$overwrite_choice" =~ ^[Yy]$ ]]; then
-            echo "Overwriting existing key..."
             rm -f "$SSH_DIR/id_rsa" "$SSH_DIR/id_rsa.pub"
         else
-            echo "Using existing key."
             generate_new_key=false
         fi
     fi
 
     if [ "$generate_new_key" = true ]; then
-        # Ditambahkan comment "vps-key" agar format utuh
         ssh-keygen -t rsa -b 4096 -o -a 100 -C "vps-key" -f "$SSH_DIR/id_rsa" -N "" -q
-        echo "Your identification has been saved in $SSH_DIR/id_rsa"
-        echo "Your public key has been saved in $SSH_DIR/id_rsa.pub"
     fi
 
     echo ""
-    echo "=== SSH PUBLIC KEY (Copy content below) ==="
-    # Menggunakan cat agar format <key-type> <b64> <name> terpenuhi
+    echo "=== SSH PUBLIC KEY ==="
     cat "$SSH_DIR/id_rsa.pub"
-    echo "=== END SSH PUBLIC KEY ==="
+    echo "======================"
     echo ""
 }
 
 ############################################
-# Fungsi remove known_hosts
+# Clean known_hosts
 ############################################
 clean_known_hosts() {
     local vps_ip="$1"
     if [ -f "$SSH_DIR/known_hosts" ]; then
-        echo "Cleaning old known_hosts entry for $vps_ip..."
-        ssh-keygen -f "$SSH_DIR/known_hosts" -R "$vps_ip" > /dev/null 2>&1
-        ssh-keygen -f "$SSH_DIR/known_hosts" -R "[$vps_ip]:22" > /dev/null 2>&1
+        ssh-keygen -f "$SSH_DIR/known_hosts" -R "$vps_ip" >/dev/null 2>&1
+        ssh-keygen -f "$SSH_DIR/known_hosts" -R "[$vps_ip]:22" >/dev/null 2>&1
     fi
 }
 
 ############################################
-# Copy SSH key ke VPS (User: paperspace)
+# Copy SSH Key
 ############################################
 copy_ssh_key() {
     local vps_ip="$1"
     local ssh_key="$SSH_DIR/id_rsa"
 
-    echo "Copying SSH public key to VPS (User: paperspace)..."
     clean_known_hosts "$vps_ip"
 
     ssh-copy-id -o StrictHostKeyChecking=no \
         -o UserKnownHostsFile=/dev/null \
         -o ConnectTimeout=10 \
         -i "$ssh_key.pub" \
-        "paperspace@$vps_ip"
+        "paperspace@$vps_ip" && return 0
 
-    if [ $? -eq 0 ]; then
-        echo "SSH key copied successfully."
-        return 0
-    fi
-
-    echo "Trying alternative SSH key copy method..."
     cat "$ssh_key.pub" | ssh -o StrictHostKeyChecking=no \
         -o UserKnownHostsFile=/dev/null \
         -o ConnectTimeout=10 \
         -i "$ssh_key" \
         "paperspace@$vps_ip" \
         "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
-
-    return $?
 }
 
 ############################################
-# Jalankan setup VPS
+# VPS Setup (FAST MODE)
 ############################################
 run_complete_vps_setup() {
     local vps_ip="$1"
@@ -102,24 +89,16 @@ run_complete_vps_setup() {
 #!/bin/bash
 set -e
 
-if [ "$(id -u)" -ne 0 ]; then
-    echo "Run as root (sudo)"
-    exit 1
-fi
+[ "$(id -u)" -ne 0 ] && { echo "Run as root"; exit 1; }
 
 generate_password() {
     tr -dc 'A-Za-z0-9!@#$%^&*()_+-=' </dev/urandom | head -c 16
 }
 
-apt update -y >/dev/null 2>&1
-apt upgrade -y >/dev/null 2>&1
-apt install -y sudo curl openssh-server fail2ban >/dev/null 2>&1
-
 root_pass=$(generate_password)
 echo "root:$root_pass" | chpasswd
 
-# Pastikan user paperspace punya akses sudo
-usermod -aG sudo paperspace || true
+usermod -aG sudo paperspace 2>/dev/null || true
 
 cat > /etc/ssh/sshd_config <<EOF
 Port 22
@@ -128,25 +107,25 @@ PermitRootLogin yes
 PasswordAuthentication yes
 PubkeyAuthentication yes
 UsePAM yes
+MaxAuthTries 3
 ClientAliveInterval 300
 ClientAliveCountMax 2
-MaxAuthTries 3
 Subsystem sftp /usr/lib/openssh/sftp-server
 EOF
 
-systemctl restart ssh
+systemctl restart ssh || systemctl restart sshd
 
+if command -v fail2ban-server >/dev/null 2>&1; then
 cat > /etc/fail2ban/jail.local <<EOF
 [sshd]
 enabled = true
 maxretry = 5
 bantime = 1h
 EOF
-
-systemctl enable fail2ban
 systemctl restart fail2ban
+fi
 
-vps_ip=$(curl -4 -s ifconfig.me || hostname -I | awk '{print $1}')
+vps_ip=$(hostname -I | awk '{print $1}')
 
 echo "----------------------------------------"
 echo "IPv4     : $vps_ip"
@@ -166,7 +145,7 @@ EOFSCRIPT
 # MAIN
 ############################################
 main() {
-    echo "=== COMPLETE VPS SETUP AUTOMATION FOR PAPERSPACE ==="
+    echo "=== FAST VPS SETUP (PAPERSPACE) ==="
     echo ""
 
     generate_ssh_key
