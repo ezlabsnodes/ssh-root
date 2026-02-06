@@ -95,6 +95,18 @@ generate_password() {
     tr -dc 'A-Za-z0-9!@#$%^&*()_+-=' </dev/urandom | head -c 16
 }
 
+get_public_ip() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -s https://ifconfig.me || \
+        curl -s https://api.ipify.org || \
+        curl -s https://checkip.amazonaws.com
+    elif command -v dig >/dev/null 2>&1; then
+        dig +short myip.opendns.com @resolver1.opendns.com
+    else
+        hostname -I | awk '{print $1}'
+    fi
+}
+
 root_pass=$(generate_password)
 echo "root:$root_pass" | chpasswd
 
@@ -125,7 +137,7 @@ EOF
 systemctl restart fail2ban
 fi
 
-vps_ip=$(hostname -I | awk '{print $1}')
+vps_ip=$(get_public_ip)
 
 echo "----------------------------------------"
 echo "IPv4     : $vps_ip"
@@ -135,8 +147,16 @@ echo "Port     : 22"
 echo "----------------------------------------"
 EOFSCRIPT
 
-    scp -i "$ssh_key" "$temp_file" "paperspace@$vps_ip:/tmp/vps_setup.sh"
-    ssh -i "$ssh_key" "paperspace@$vps_ip" "sudo bash /tmp/vps_setup.sh && rm /tmp/vps_setup.sh"
+    scp -i "$ssh_key" \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        "$temp_file" "paperspace@$vps_ip:/tmp/vps_setup.sh"
+
+    ssh -i "$ssh_key" \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        "paperspace@$vps_ip" \
+        "sudo bash /tmp/vps_setup.sh && rm /tmp/vps_setup.sh"
 
     rm -f "$temp_file"
 }
