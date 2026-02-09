@@ -121,7 +121,6 @@ generate_password() {
 }
 
 apt update -y >/dev/null 2>&1
-apt upgrade -y >/dev/null 2>&1
 apt install -y sudo curl openssh-server fail2ban >/dev/null 2>&1
 
 root_pass=$(generate_password)
